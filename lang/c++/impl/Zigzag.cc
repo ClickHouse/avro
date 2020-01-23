@@ -24,7 +24,9 @@ namespace avro {
 uint64_t
 encodeZigzag64(int64_t input)
 {
-    return ((input << 1) ^ (input >> 63));
+    // This is required to prevent bit shifts of signed integers, that is UB in C++ if the shifted value is negative.
+    uint64_t u_input = input;
+    return ((u_input << 1) ^ (u_input >> 63));
 }
 
 int64_t
@@ -36,7 +38,8 @@ decodeZigzag64(uint64_t input)
 uint32_t
 encodeZigzag32(int32_t input)
 {
-    return ((input << 1) ^ (input >> 31));
+    uint32_t u_input = input;
+    return ((u_input << 1) ^ (u_input >> 31));
 }
 
 int32_t

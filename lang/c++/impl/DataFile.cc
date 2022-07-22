@@ -235,26 +235,9 @@ void DataFileWriterBase::flush()
     sync();
 }
 
-class Random
-{
-public:
-    Random() : impl(static_cast<uint32_t>(time(0))) {}
-
-    auto operator()()
-    {
-        std::lock_guard lock(mutex);
-        return impl();
-    }
-
-private:
-    boost::mt19937 impl;
-    std::mutex mutex;
-};
-
-Random random;
-
 DataFileSync DataFileWriterBase::makeSync()
 {
+    boost::mt19937 random(static_cast<uint32_t>(time(nullptr)));
     DataFileSync sync;
     for (size_t i = 0; i < sync.size(); ++i) {
         sync[i] = random();

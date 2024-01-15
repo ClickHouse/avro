@@ -66,8 +66,8 @@ if (AVRO_ADD_PROTECTOR_FLAGS)
 endif ()
 endif ()
 
-
-find_package (Boost 1.38 REQUIRED
+# Boost add Zstd to its iostreams submodule since 1.70 version
+find_package (Boost 1.70 REQUIRED
     COMPONENTS filesystem iostreams program_options regex system)
 
 find_package(Snappy)

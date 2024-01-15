@@ -176,13 +176,13 @@ void DataFileWriterBase::sync()
             boost::iostreams::filtering_ostream os;
             os.push(boost::iostreams::zstd_compressor(boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
             os.push(boost::iostreams::back_inserter(buf));
-
             const uint8_t* data;
             size_t len;
 
             std::unique_ptr<InputStream> input = memoryInputStream(*buffer_);
             while (input->next(&data, &len)) {
                 boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
+            }
         }
         std::unique_ptr<InputStream> in = memoryInputStream(
            reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
@@ -190,7 +190,6 @@ void DataFileWriterBase::sync()
         avro::encode(*encoderPtr_, byteCount);
         encoderPtr_->flush();
         copy(*in, *stream_);
-    }
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
         std::vector<char> temp;

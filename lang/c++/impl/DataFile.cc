@@ -26,6 +26,7 @@
 #include <boost/iostreams/device/file.hpp>
 #include <boost/iostreams/filter/gzip.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
+#include <boost/iostreams/filter/zstd.hpp>
 #include <boost/crc.hpp>  // for boost::crc_32_type
 
 #ifdef SNAPPY_CODEC_AVAILABLE
@@ -47,6 +48,7 @@ const string AVRO_SCHEMA_KEY("avro.schema");
 const string AVRO_CODEC_KEY("avro.codec");
 const string AVRO_NULL_CODEC("null");
 const string AVRO_DEFLATE_CODEC("deflate");
+const string AVRO_ZSTD_CODEC("zstandard");
 
 #ifdef SNAPPY_CODEC_AVAILABLE
 const string AVRO_SNAPPY_CODEC = "snappy";
@@ -105,6 +107,8 @@ void DataFileWriterBase::init(const ValidSchema &schema, size_t syncInterval, co
       setMetadata(AVRO_CODEC_KEY, AVRO_NULL_CODEC);
     } else if (codec_ == DEFLATE_CODEC) {
       setMetadata(AVRO_CODEC_KEY, AVRO_DEFLATE_CODEC);
+    } else if (codec_ == ZSTD_CODEC) {
+      setMetadata(AVRO_CODEC_KEY, AVRO_ZSTD_CODEC);
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
       setMetadata(AVRO_CODEC_KEY, AVRO_SNAPPY_CODEC);
@@ -166,6 +170,27 @@ void DataFileWriterBase::sync()
         avro::encode(*encoderPtr_, byteCount);
         encoderPtr_->flush();
         copy(*in, *stream_);
+    } else if (codec_ == ZSTD_CODEC) {
+        std::vector<char> buf;
+        {
+            boost::iostreams::filtering_ostream os;
+            os.push(boost::iostreams::zstd_compressor(boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
+            os.push(boost::iostreams::back_inserter(buf));
+
+            const uint8_t* data;
+            size_t len;
+
+            std::unique_ptr<InputStream> input = memoryInputStream(*buffer_);
+            while (input->next(&data, &len)) {
+                boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
+        }
+        std::unique_ptr<InputStream> in = memoryInputStream(
+           reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+        int64_t byteCount = buf.size();
+        avro::encode(*encoderPtr_, byteCount);
+        encoderPtr_->flush();
+        copy(*in, *stream_);
+    }
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
         std::vector<char> temp;
@@ -402,6 +427,21 @@ void DataFileReaderBase::readDataBlock()
     if (codec_ == NULL_CODEC) {
         dataDecoder_->init(*st);
         dataStream_ = std::move(st);
+    } else if (codec_ == ZSTD_CODEC) {
+        compressed_.clear();
+        const uint8_t* data;
+        size_t len;
+        while (st->next(&data, &len)) {
+            compressed_.insert(compressed_.end(), data, data + len);
+        }
+        os_.reset(new boost::iostreams::filtering_istream());
+        os_->push(boost::iostreams::zstd_decompressor(boost::iostreams::zstd_params((boost::iostreams::zstd::default_compression))));
+        os_->push(boost::iostreams::basic_array_source<char>(
+                                                             compressed_.data(), compressed_.size()));
+
+        std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
+        dataDecoder_->init(*in);
+        dataStream_ = std::move(in);
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
         boost::crc_32_type crc;
@@ -504,6 +544,8 @@ void DataFileReaderBase::readHeader()
     it = metadata_.find(AVRO_CODEC_KEY);
     if (it != metadata_.end() && toString(it->second) == AVRO_DEFLATE_CODEC) {
         codec_ = DEFLATE_CODEC;
+    } else if (it != metadata_.end() && toString(it->second) == AVRO_ZSTD_CODEC) {
+        codec_ = ZSTD_CODEC;
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (it != metadata_.end()
             && toString(it->second) == AVRO_SNAPPY_CODEC) {

@@ -194,9 +194,15 @@ size_t BinaryDecoder::doDecodeItemCount()
     return static_cast<size_t>(result);
 }
 
+/** See https://github.com/ClickHouse/ClickHouse/issues/60438 */
 size_t BinaryDecoder::arrayNext()
 {
-    return static_cast<size_t>(doDecodeLong());
+    int64_t result = doDecodeLong();
+    if (result < 0) {
+        doDecodeLong();
+        return static_cast<size_t>(-result);
+    }
+    return static_cast<size_t>(result);
 }
 
 size_t BinaryDecoder::skipArray()

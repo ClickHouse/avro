@@ -161,7 +161,7 @@ public:
     void write(const T& datum) {
         if (!metadata_is_written_) {
             metadata_is_written_ = true;
-            writeHeader();
+            base_->writeHeader();
         }
         base_->syncIfNeeded();
         avro::encode(base_->encoder(), datum);
@@ -185,11 +185,6 @@ public:
     void flush() { base_->flush(); }
 
     void setMetadata(const std::string& key, const std::string& value) { base_->setMetadata(key, value); }
-
-    void writeHeader() { 
-        metadata_is_written_ = true;
-        base_->writeHeader(); 
-    }
 };
 
 /**

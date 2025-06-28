@@ -185,6 +185,12 @@ public:
     void flush() { base_->flush(); }
 
     void setMetadata(const std::string& key, const std::string& value) { base_->setMetadata(key, value); }
+
+    ~DataFileWriter() {
+        if (!metadata_is_written_) {
+            base_->writeHeader();
+        }
+    }
 };
 
 /**

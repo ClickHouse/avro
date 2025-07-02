@@ -74,6 +74,7 @@ class AVRO_DECL DataFileWriterBase : boost::noncopyable {
     typedef std::map<std::string, std::vector<uint8_t> > Metadata;
 
     Metadata metadata_;
+    bool metadata_is_written_ = false;
 
     static std::unique_ptr<OutputStream> makeStream(const char* filename);
     static DataFileSync makeSync();
@@ -88,9 +89,8 @@ class AVRO_DECL DataFileWriterBase : boost::noncopyable {
      */
     void init(const ValidSchema &schema, size_t syncInterval, const Codec &codec);
 
-public:
-
     void writeHeader();
+public:
     void setMetadata(const std::string& key, const std::string& value);
 
     /**
@@ -141,7 +141,6 @@ public:
  */
 template <typename T>
 class DataFileWriter : boost::noncopyable {
-    bool metadata_is_written_ = false;
     std::unique_ptr<DataFileWriterBase> base_;
 public:
     /**
@@ -159,10 +158,6 @@ public:
      * Writes the given piece of data into the file.
      */
     void write(const T& datum) {
-        if (!metadata_is_written_) {
-            metadata_is_written_ = true;
-            base_->writeHeader();
-        }
         base_->syncIfNeeded();
         avro::encode(base_->encoder(), datum);
         base_->incr();
@@ -185,12 +180,6 @@ public:
     void flush() { base_->flush(); }
 
     void setMetadata(const std::string& key, const std::string& value) { base_->setMetadata(key, value); }
-
-    ~DataFileWriter() {
-        if (!metadata_is_written_) {
-            base_->writeHeader();
-        }
-    }
 };
 
 /**

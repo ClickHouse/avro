@@ -245,6 +245,10 @@ void DataFileWriterBase::sync()
 
 void DataFileWriterBase::syncIfNeeded()
 {
+    if (!metadata_is_written_) {
+        metadata_is_written_ = true;
+        writeHeader();
+    }
     encoderPtr_->flush();
     if (buffer_->byteCount() >= syncInterval_) {
         sync();

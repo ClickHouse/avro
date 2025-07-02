@@ -122,6 +122,9 @@ void DataFileWriterBase::init(const ValidSchema &schema, size_t syncInterval, co
 
 DataFileWriterBase::~DataFileWriterBase()
 {
+    if (!metadata_is_written_)
+        writeHeader();
+
     if (stream_.get()) {
         try {
             close();

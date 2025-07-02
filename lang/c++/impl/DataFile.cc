@@ -117,9 +117,6 @@ void DataFileWriterBase::init(const ValidSchema &schema, size_t syncInterval, co
       throw Exception(boost::format("Unknown codec: %1%") % codec);
     }
     setMetadata(AVRO_SCHEMA_KEY, schema.toJson(false));
-
-    writeHeader();
-    encoderPtr_->init(*buffer_);
 }
 
 
@@ -279,6 +276,7 @@ void DataFileWriterBase::writeHeader()
     avro::encode(*encoderPtr_, metadata_);
     avro::encode(*encoderPtr_, sync_);
     encoderPtr_->flush();
+    encoderPtr_->init(*buffer_);
 }
 
 void DataFileWriterBase::setMetadata(const string& key, const string& value)

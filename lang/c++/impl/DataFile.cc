@@ -122,6 +122,9 @@ void DataFileWriterBase::init(const ValidSchema &schema, size_t syncInterval, co
 
 DataFileWriterBase::~DataFileWriterBase()
 {
+    if (!metadata_is_written_)
+        writeHeader();
+
     if (stream_.get()) {
         try {
             close();
@@ -245,6 +248,10 @@ void DataFileWriterBase::sync()
 
 void DataFileWriterBase::syncIfNeeded()
 {
+    if (!metadata_is_written_) {
+        metadata_is_written_ = true;
+        writeHeader();
+    }
     encoderPtr_->flush();
     if (buffer_->byteCount() >= syncInterval_) {
         sync();

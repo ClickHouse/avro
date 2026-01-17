@@ -55,6 +55,28 @@ const int SyncSize = 16;
 typedef std::array<uint8_t, SyncSize> DataFileSync;
 
 /**
+ * Parsed Avro file header information.
+ */
+struct AVRO_DECL AvroFileHeader {
+    ValidSchema schema;      /// Parsed schema from metadata
+    Codec codec;             /// Codec enum (NULL_CODEC, DEFLATE_CODEC, etc.)
+    DataFileSync sync;       /// 16-byte sync marker
+    size_t headerSize;       /// Total bytes consumed by the header
+};
+
+/**
+ * Read and parse an Avro Object Container File header.
+ *
+ * Verifies magic bytes, parses metadata to extract schema and codec,
+ * and reads the sync marker.
+ *
+ * @param stream Input stream positioned at start of file
+ * @return Parsed header information including headerSize (bytes consumed)
+ * @throws Exception if header is invalid or malformed
+ */
+AVRO_DECL AvroFileHeader readAvroHeader(InputStream& stream);
+
+/**
  * Type-independent portion of DataFileWriter.
  *  At any given point in time, at most one file can be written using
  *  this object.

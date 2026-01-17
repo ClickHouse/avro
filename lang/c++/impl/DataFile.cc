@@ -65,6 +65,63 @@ boost::iostreams::zlib_params get_zlib_params() {
 }
 }
 
+AvroFileHeader readAvroHeader(InputStream& stream) {
+    DecoderPtr decoder = binaryDecoder();
+    decoder->init(stream);
+
+    // Verify magic bytes
+    typedef array<uint8_t, 4> Magic;
+    static Magic magic = { { 'O', 'b', 'j', '\x01' } };
+    Magic m;
+    avro::decode(*decoder, m);
+    if (magic != m) {
+        throw Exception("Invalid Avro file: magic bytes do not match");
+    }
+
+    // Read metadata map
+    typedef std::map<std::string, std::vector<uint8_t>> Metadata;
+    Metadata metadata;
+    avro::decode(*decoder, metadata);
+
+    // Extract schema
+    auto schemaIt = metadata.find(AVRO_SCHEMA_KEY);
+    if (schemaIt == metadata.end()) {
+        throw Exception("No schema in Avro file metadata");
+    }
+    std::string schemaJson(schemaIt->second.begin(), schemaIt->second.end());
+    ValidSchema schema = compileJsonSchemaFromString(schemaJson);
+
+    // Extract codec
+    Codec codec = NULL_CODEC;
+    auto codecIt = metadata.find(AVRO_CODEC_KEY);
+    if (codecIt != metadata.end()) {
+        std::string codecName(codecIt->second.begin(), codecIt->second.end());
+        if (codecName == AVRO_DEFLATE_CODEC) {
+            codec = DEFLATE_CODEC;
+        } else if (codecName == AVRO_ZSTD_CODEC) {
+            codec = ZSTD_CODEC;
+#ifdef SNAPPY_CODEC_AVAILABLE
+        } else if (codecName == AVRO_SNAPPY_CODEC) {
+            codec = SNAPPY_CODEC;
+#endif
+        } else if (codecName != AVRO_NULL_CODEC) {
+            throw Exception("Unknown codec in Avro file: " + codecName);
+        }
+    }
+
+    // Read sync marker
+    DataFileSync sync;
+    avro::decode(*decoder, sync);
+
+    // Return any unused buffered bytes to the stream so byteCount() is accurate
+    decoder->drain();
+
+    // Get the header size from the stream's byte count
+    size_t headerSize = stream.byteCount();
+
+    return AvroFileHeader{std::move(schema), codec, sync, headerSize};
+}
+
 DataFileWriterBase::DataFileWriterBase(const char* filename, const ValidSchema& schema, size_t syncInterval,
                                        Codec codec) :
     filename_(filename),

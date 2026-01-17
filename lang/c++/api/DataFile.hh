@@ -62,6 +62,7 @@ struct AVRO_DECL AvroFileHeader {
     Codec codec;             /// Codec enum (NULL_CODEC, DEFLATE_CODEC, etc.)
     DataFileSync sync;       /// 16-byte sync marker
     size_t headerSize;       /// Total bytes consumed by the header
+    std::map<std::string, std::vector<uint8_t>> metadata;  /// Full metadata map
 };
 
 /**

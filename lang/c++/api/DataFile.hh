@@ -295,6 +295,26 @@ public:
      * Return file metadata.
      */
     const Metadata& metadata() const { return metadata_; }
+
+    /**
+     * Return the sync marker for this file.
+     */
+    const DataFileSync& sync() const { return sync_; }
+
+    /**
+     * Return the codec used for this file.
+     */
+    Codec codec() const { return codec_; }
+
+    /**
+     * Decompress a block of data using the specified codec.
+     * For SNAPPY_CODEC, verifies the CRC32 checksum.
+     * @param data Pointer to compressed data
+     * @param size Size of compressed data
+     * @param codec Codec to use for decompression
+     * @param out Output string to receive decompressed data (cleared first)
+     */
+    static void decompressBlock(const char* data, size_t size, Codec codec, std::string& out);
 };
 
 /**

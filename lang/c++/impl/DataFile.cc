@@ -410,6 +410,61 @@ unique_ptr<InputStream> boundedInputStream(InputStream& in, size_t limit)
     return unique_ptr<InputStream>(new BoundedInputStream(in, limit));
 }
 
+void DataFileReaderBase::decompressBlock(const char* data, size_t size, Codec codec, std::string& out)
+{
+    out.clear();
+
+    if (codec == NULL_CODEC) {
+        out.assign(data, size);
+    } else if (codec == ZSTD_CODEC) {
+        boost::iostreams::filtering_istream is;
+        is.push(boost::iostreams::zstd_decompressor(
+            boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
+        is.push(boost::iostreams::basic_array_source<char>(data, size));
+
+        std::ostringstream oss;
+        oss << is.rdbuf();
+        out = oss.str();
+    } else if (codec == DEFLATE_CODEC) {
+        boost::iostreams::filtering_istream is;
+        is.push(boost::iostreams::zlib_decompressor(get_zlib_params()));
+        is.push(boost::iostreams::basic_array_source<char>(data, size));
+
+        std::ostringstream oss;
+        oss << is.rdbuf();
+        out = oss.str();
+#ifdef SNAPPY_CODEC_AVAILABLE
+    } else if (codec == SNAPPY_CODEC) {
+        if (size < 4) {
+            throw Exception("Cannot decompress Snappy data, expected at least 4 bytes, got " + std::to_string(size));
+        }
+
+        // Extract CRC32 checksum from last 4 bytes (big-endian)
+        int b1 = static_cast<unsigned char>(data[size - 4]);
+        int b2 = static_cast<unsigned char>(data[size - 3]);
+        int b3 = static_cast<unsigned char>(data[size - 2]);
+        int b4 = static_cast<unsigned char>(data[size - 1]);
+        uint32_t expected_checksum = (b1 << 24) + (b2 << 16) + (b3 << 8) + b4;
+
+        // Decompress (excluding the 4-byte checksum)
+        if (!snappy::Uncompress(data, size - 4, &out)) {
+            throw Exception("Snappy decompression failed");
+        }
+
+        // Verify checksum
+        boost::crc_32_type crc;
+        crc.process_bytes(out.data(), out.size());
+        uint32_t actual_checksum = crc();
+        if (expected_checksum != actual_checksum) {
+            throw Exception(boost::format("Snappy checksum mismatch: expected %1%, got %2%")
+                % expected_checksum % actual_checksum);
+        }
+#endif
+    } else {
+        throw Exception(boost::format("Unknown codec: %1%") % codec);
+    }
+}
+
 void DataFileReaderBase::readDataBlock()
 {
     decoder_->init(*stream_);

@@ -319,16 +319,6 @@ public:
     const Metadata& metadata() const { return metadata_; }
 
     /**
-     * Return the sync marker for this file.
-     */
-    const DataFileSync& sync() const { return sync_; }
-
-    /**
-     * Return the codec used for this file.
-     */
-    Codec codec() const { return codec_; }
-
-    /**
      * Decompress a block of data using the specified codec.
      * For SNAPPY_CODEC, verifies the CRC32 checksum.
      * @param data Pointer to compressed data

@@ -65,13 +65,14 @@ boost::iostreams::zlib_params get_zlib_params() {
 }
 }
 
+typedef array<uint8_t, 4> Magic;
+static Magic magic = { { 'O', 'b', 'j', '\x01' } };
+
 AvroFileHeader readAvroHeader(InputStream& stream) {
     DecoderPtr decoder = binaryDecoder();
     decoder->init(stream);
 
     // Verify magic bytes
-    typedef array<uint8_t, 4> Magic;
-    static Magic magic = { { 'O', 'b', 'j', '\x01' } };
     Magic m;
     avro::decode(*decoder, m);
     if (magic != m) {
@@ -329,9 +330,6 @@ DataFileSync DataFileWriterBase::makeSync()
     }
     return sync;
 }
-
-typedef array<uint8_t, 4> Magic;
-static Magic magic = { { 'O', 'b', 'j', '\x01' } };
 
 void DataFileWriterBase::writeHeader()
 {

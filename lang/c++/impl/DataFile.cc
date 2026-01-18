@@ -66,6 +66,7 @@ boost::iostreams::zlib_params get_zlib_params() {
 }
 
 typedef array<uint8_t, 4> Magic;
+typedef std::map<std::string, std::vector<uint8_t>> Metadata;
 static Magic magic = { { 'O', 'b', 'j', '\x01' } };
 
 AvroFileHeader readAvroHeader(InputStream& stream) {
@@ -80,7 +81,6 @@ AvroFileHeader readAvroHeader(InputStream& stream) {
     }
 
     // Read metadata map
-    typedef std::map<std::string, std::vector<uint8_t>> Metadata;
     Metadata metadata;
     avro::decode(*decoder, metadata);
 

@@ -486,6 +486,11 @@ NodeArray::printJson(std::ostream &os, int depth) const
         os << indent(depth+1) << "\"doc\": \""
            << escape(getDoc()) << "\",\n";
     }
+    if (logicalType().type() != LogicalType::NONE) {
+        os << indent(depth+1);
+        logicalType().printJson(os);
+        os << ",\n";
+    }
     os << indent(depth+1) <<  "\"items\": ";
     leafAttributes_.get()->printJson(os, depth+1);
     os << '\n';

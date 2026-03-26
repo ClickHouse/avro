@@ -304,6 +304,7 @@ class AVRO_DECL NodeSymbolic : public NodeImplSymbolic
 
 class AVRO_DECL NodeRecord : public NodeImplRecord {
     std::vector<GenericDatum> defaultValues;
+    std::vector<int> fieldIds_;
 public:
     NodeRecord() : NodeImplRecord(AVRO_RECORD) { }
     NodeRecord(const HasName &name, const MultiLeaves &fields,
@@ -337,6 +338,7 @@ public:
     void swap(NodeRecord& r) {
         NodeImplRecord::swap(r);
         defaultValues.swap(r.defaultValues);
+        fieldIds_.swap(r.fieldIds_);
     }
 
     SchemaResolution resolve(const Node &reader)  const;
@@ -350,6 +352,15 @@ public:
 
     const GenericDatum& defaultValueAt(int index) {
         return defaultValues[index];
+    }
+
+    void setFieldIds(const std::vector<int>& ids) {
+        fieldIds_ = ids;
+    }
+
+    int fieldIdAt(size_t index) const {
+        if (index < fieldIds_.size()) return fieldIds_[index];
+        return -1;
     }
 
     void printDefaultToJson(const GenericDatum& g, std::ostream &os, int depth) const;
@@ -389,14 +400,17 @@ class AVRO_DECL NodeEnum : public NodeImplEnum
 
 class AVRO_DECL NodeArray : public NodeImplArray
 {
+    int elementId_;
   public:
 
     NodeArray() :
-        NodeImplArray(AVRO_ARRAY)
+        NodeImplArray(AVRO_ARRAY),
+        elementId_(-1)
     { }
 
     explicit NodeArray(const SingleLeaf &items) :
-        NodeImplArray(AVRO_ARRAY, NoName(), items, NoLeafNames(), NoSize())
+        NodeImplArray(AVRO_ARRAY, NoName(), items, NoLeafNames(), NoSize()),
+        elementId_(-1)
     { }
 
     SchemaResolution resolve(const Node &reader)  const;
@@ -406,6 +420,9 @@ class AVRO_DECL NodeArray : public NodeImplArray
     bool isValid() const {
         return (leafAttributes_.size() == 1);
     }
+
+    void setElementId(int id) { elementId_ = id; }
+    int elementId() const { return elementId_; }
 
     void printDefaultToJson(const GenericDatum& g, std::ostream &os, int depth) const;
 };

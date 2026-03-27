@@ -283,6 +283,9 @@ NodeRecord::printJson(std::ostream &os, int depth) const
         os << indent(depth) << "\"type\": ";
         leafAttributes_.get(i)->printJson(os, depth);
 
+        if (int fid = fieldIdAt(i); fid >= 0)
+            os << ",\n" << indent(depth) << "\"field-id\": " << fid;
+
         if (!defaultValues.empty()) {
           if (!defaultValues[i].isUnion() &&
               defaultValues[i].type() == AVRO_NULL) {

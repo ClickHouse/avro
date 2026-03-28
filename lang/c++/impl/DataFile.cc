@@ -65,6 +65,64 @@ boost::iostreams::zlib_params get_zlib_params() {
 }
 }
 
+typedef array<uint8_t, 4> Magic;
+typedef std::map<std::string, std::vector<uint8_t>> Metadata;
+static Magic magic = { { 'O', 'b', 'j', '\x01' } };
+
+AvroFileHeader readAvroHeader(InputStream& stream) {
+    DecoderPtr decoder = binaryDecoder();
+    decoder->init(stream);
+
+    // Verify magic bytes
+    Magic m;
+    avro::decode(*decoder, m);
+    if (magic != m) {
+        throw Exception("Invalid Avro file: magic bytes do not match");
+    }
+
+    // Read metadata map
+    Metadata metadata;
+    avro::decode(*decoder, metadata);
+
+    // Extract schema
+    auto schemaIt = metadata.find(AVRO_SCHEMA_KEY);
+    if (schemaIt == metadata.end()) {
+        throw Exception("No schema in Avro file metadata");
+    }
+    std::string schemaJson(schemaIt->second.begin(), schemaIt->second.end());
+    ValidSchema schema = compileJsonSchemaFromString(schemaJson);
+
+    // Extract codec
+    Codec codec = NULL_CODEC;
+    auto codecIt = metadata.find(AVRO_CODEC_KEY);
+    if (codecIt != metadata.end()) {
+        std::string codecName(codecIt->second.begin(), codecIt->second.end());
+        if (codecName == AVRO_DEFLATE_CODEC) {
+            codec = DEFLATE_CODEC;
+        } else if (codecName == AVRO_ZSTD_CODEC) {
+            codec = ZSTD_CODEC;
+#ifdef SNAPPY_CODEC_AVAILABLE
+        } else if (codecName == AVRO_SNAPPY_CODEC) {
+            codec = SNAPPY_CODEC;
+#endif
+        } else if (codecName != AVRO_NULL_CODEC) {
+            throw Exception("Unknown codec in Avro file: " + codecName);
+        }
+    }
+
+    // Read sync marker
+    DataFileSync sync;
+    avro::decode(*decoder, sync);
+
+    // Return any unused buffered bytes to the stream so byteCount() is accurate
+    decoder->drain();
+
+    // Get the header size from the stream's byte count
+    size_t headerSize = stream.byteCount();
+
+    return AvroFileHeader{std::move(schema), codec, sync, headerSize, std::move(metadata)};
+}
+
 DataFileWriterBase::DataFileWriterBase(const char* filename, const ValidSchema& schema, size_t syncInterval,
                                        Codec codec) :
     filename_(filename),
@@ -273,9 +331,6 @@ DataFileSync DataFileWriterBase::makeSync()
     return sync;
 }
 
-typedef array<uint8_t, 4> Magic;
-static Magic magic = { { 'O', 'b', 'j', '\x01' } };
-
 void DataFileWriterBase::writeHeader()
 {
     encoderPtr_->init(*stream_);
@@ -410,6 +465,61 @@ unique_ptr<InputStream> boundedInputStream(InputStream& in, size_t limit)
     return unique_ptr<InputStream>(new BoundedInputStream(in, limit));
 }
 
+void DataFileReaderBase::decompressBlock(const char* data, size_t size, Codec codec, std::string& out)
+{
+    out.clear();
+
+    if (codec == NULL_CODEC) {
+        out.assign(data, size);
+    } else if (codec == ZSTD_CODEC) {
+        boost::iostreams::filtering_istream is;
+        is.push(boost::iostreams::zstd_decompressor(
+            boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
+        is.push(boost::iostreams::basic_array_source<char>(data, size));
+
+        std::ostringstream oss;
+        oss << is.rdbuf();
+        out = oss.str();
+    } else if (codec == DEFLATE_CODEC) {
+        boost::iostreams::filtering_istream is;
+        is.push(boost::iostreams::zlib_decompressor(get_zlib_params()));
+        is.push(boost::iostreams::basic_array_source<char>(data, size));
+
+        std::ostringstream oss;
+        oss << is.rdbuf();
+        out = oss.str();
+#ifdef SNAPPY_CODEC_AVAILABLE
+    } else if (codec == SNAPPY_CODEC) {
+        if (size < 4) {
+            throw Exception("Cannot decompress Snappy data, expected at least 4 bytes, got " + std::to_string(size));
+        }
+
+        // Extract CRC32 checksum from last 4 bytes (big-endian)
+        int b1 = static_cast<unsigned char>(data[size - 4]);
+        int b2 = static_cast<unsigned char>(data[size - 3]);
+        int b3 = static_cast<unsigned char>(data[size - 2]);
+        int b4 = static_cast<unsigned char>(data[size - 1]);
+        uint32_t expected_checksum = (b1 << 24) + (b2 << 16) + (b3 << 8) + b4;
+
+        // Decompress (excluding the 4-byte checksum)
+        if (!snappy::Uncompress(data, size - 4, &out)) {
+            throw Exception("Snappy decompression failed");
+        }
+
+        // Verify checksum
+        boost::crc_32_type crc;
+        crc.process_bytes(out.data(), out.size());
+        uint32_t actual_checksum = crc();
+        if (expected_checksum != actual_checksum) {
+            throw Exception(boost::format("Snappy checksum mismatch: expected %1%, got %2%")
+                % expected_checksum % actual_checksum);
+        }
+#endif
+    } else {
+        throw Exception(boost::format("Unknown codec: %1%") % codec);
+    }
+}
+
 void DataFileReaderBase::readDataBlock()
 {
     decoder_->init(*stream_);
@@ -431,77 +541,24 @@ void DataFileReaderBase::readDataBlock()
     if (codec_ == NULL_CODEC) {
         dataDecoder_->init(*st);
         dataStream_ = std::move(st);
-    } else if (codec_ == ZSTD_CODEC) {
-        compressed_.clear();
-        const uint8_t* data;
-        size_t len;
-        while (st->next(&data, &len)) {
-            compressed_.insert(compressed_.end(), data, data + len);
-        }
-        os_.reset(new boost::iostreams::filtering_istream());
-        os_->push(boost::iostreams::zstd_decompressor(boost::iostreams::zstd_params((boost::iostreams::zstd::default_compression))));
-        os_->push(boost::iostreams::basic_array_source<char>(
-                                                             compressed_.data(), compressed_.size()));
-
-        std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
-        dataDecoder_->init(*in);
-        dataStream_ = std::move(in);
-#ifdef SNAPPY_CODEC_AVAILABLE
-    } else if (codec_ == SNAPPY_CODEC) {
-        boost::crc_32_type crc;
-        uint32_t checksum = 0;
-        compressed_.clear();
-        uncompressed.clear();
-        const uint8_t* data;
-        size_t len;
-        while (st->next(&data, &len)) {
-            compressed_.insert(compressed_.end(), data, data + len);
-        }
-        len = compressed_.size();
-        if (len < 4)
-            throw Exception("Cannot read compressed data, expected at least 4 bytes, got " + std::to_string(len));
-
-        int b1 = compressed_[len - 4] & 0xFF;
-        int b2 = compressed_[len - 3] & 0xFF;
-        int b3 = compressed_[len - 2] & 0xFF;
-        int b4 = compressed_[len - 1] & 0xFF;
-
-        checksum = (b1 << 24) + (b2 << 16) + (b3 << 8) + (b4);
-        if (!snappy::Uncompress(reinterpret_cast<const char*>(compressed_.data()),
-                len - 4, &uncompressed)) {
-            throw Exception(
-                    "Snappy Compression reported an error when decompressing");
-        }
-        crc.process_bytes(uncompressed.c_str(), uncompressed.size());
-        uint32_t c = crc();
-        if (checksum != c) {
-            throw Exception(boost::format("Checksum did not match for Snappy compression: Expected: %1%, computed: %2%") % checksum % c);
-        }
-        os_.reset(new boost::iostreams::filtering_istream());
-        os_->push(
-                boost::iostreams::basic_array_source<char>(uncompressed.c_str(),
-                        uncompressed.size()));
-        std::unique_ptr<InputStream> in = istreamInputStream(*os_);
-
-        dataDecoder_->init(*in);
-        dataStream_ = std::move(in);
-#endif
     } else {
+        // Read all compressed data
         compressed_.clear();
         const uint8_t* data;
         size_t len;
         while (st->next(&data, &len)) {
             compressed_.insert(compressed_.end(), data, data + len);
         }
-        // boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
-        os_.reset(new boost::iostreams::filtering_istream());
-        os_->push(boost::iostreams::zlib_decompressor(get_zlib_params()));
-        os_->push(boost::iostreams::basic_array_source<char>(
-                                                             compressed_.data(), compressed_.size()));
 
-        std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
-        dataDecoder_->init(*in);
-        dataStream_ = std::move(in);
+        // Use unified decompression
+        decompressBlock(compressed_.data(), compressed_.size(), codec_, uncompressed);
+
+        // Create InputStream from decompressed data
+        os_.reset(new boost::iostreams::filtering_istream());
+        os_->push(boost::iostreams::basic_array_source<char>(
+            uncompressed.c_str(), uncompressed.size()));
+        dataStream_ = istreamInputStream(*os_);
+        dataDecoder_->init(*dataStream_);
     }
 }
 
@@ -509,62 +566,18 @@ void DataFileReaderBase::close()
 {
 }
 
-static string toString(const vector<uint8_t>& v)
-{
-    string result;
-    result.resize(v.size());
-    copy(v.begin(), v.end(), result.begin());
-    return result;
-}
-
-static ValidSchema makeSchema(const vector<uint8_t>& v)
-{
-    istringstream iss(toString(v));
-    ValidSchema vs;
-    compileJsonSchema(iss, vs);
-    return ValidSchema(vs);
-}
-
 void DataFileReaderBase::readHeader()
 {
-    decoder_->init(*stream_);
-    Magic m;
-    avro::decode(*decoder_, m);
-    if (magic != m) {
-        throw Exception("Invalid data file. Magic does not match: "
-            + filename_);
-    }
-    avro::decode(*decoder_, metadata_);
-    Metadata::const_iterator it = metadata_.find(AVRO_SCHEMA_KEY);
-    if (it == metadata_.end()) {
-        throw Exception("No schema in metadata");
-    }
-
-    dataSchema_ = makeSchema(it->second);
-    if (! readerSchema_.root()) {
+    AvroFileHeader header = readAvroHeader(*stream_);
+    metadata_ = std::move(header.metadata);
+    dataSchema_ = std::move(header.schema);
+    codec_ = header.codec;
+    sync_ = header.sync;
+    if (!readerSchema_.root()) {
         readerSchema_ = dataSchema();
     }
-
-    it = metadata_.find(AVRO_CODEC_KEY);
-    if (it != metadata_.end() && toString(it->second) == AVRO_DEFLATE_CODEC) {
-        codec_ = DEFLATE_CODEC;
-    } else if (it != metadata_.end() && toString(it->second) == AVRO_ZSTD_CODEC) {
-        codec_ = ZSTD_CODEC;
-#ifdef SNAPPY_CODEC_AVAILABLE
-    } else if (it != metadata_.end()
-            && toString(it->second) == AVRO_SNAPPY_CODEC) {
-        codec_ = SNAPPY_CODEC;
-#endif
-    } else {
-        codec_ = NULL_CODEC;
-        if (it != metadata_.end() && toString(it->second) != AVRO_NULL_CODEC) {
-            throw Exception("Unknown codec in data file: " + toString(it->second));
-        }
-    }
-
-    avro::decode(*decoder_, sync_);
     decoder_->init(*stream_);
-    blockStart_ = stream_->byteCount();
+    blockStart_ = header.headerSize;
 }
 
 void DataFileReaderBase::doSeek(int64_t position)

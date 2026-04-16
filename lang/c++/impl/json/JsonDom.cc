@@ -44,8 +44,12 @@ const char* typeToString(EntityType t)
     }
 }
 
-Entity readEntity(JsonParser& p)
+static Entity readEntityImpl(JsonParser& p, size_t depth, size_t maxDepth)
 {
+    if (maxDepth > 0 && depth > maxDepth) {
+        throw Exception("JSON nesting depth exceeds the limit");
+    }
+
     switch (p.peek()) {
     case JsonParser::tkNull:
         p.advance();
@@ -68,7 +72,7 @@ Entity readEntity(JsonParser& p)
             p.advance();
             std::shared_ptr<Array> v = std::make_shared<Array>();
             while (p.peek() != JsonParser::tkArrayEnd) {
-                v->push_back(readEntity(p));
+                v->push_back(readEntityImpl(p, depth + 1, maxDepth));
             }
             p.advance();
             return Entity(v, l);
@@ -81,7 +85,7 @@ Entity readEntity(JsonParser& p)
             while (p.peek() != JsonParser::tkObjectEnd) {
                 p.advance();
                 std::string k = p.stringValue();
-                Entity n = readEntity(p);
+                Entity n = readEntityImpl(p, depth + 1, maxDepth);
                 v->insert(std::make_pair(k, n));
             }
             p.advance();
@@ -90,25 +94,29 @@ Entity readEntity(JsonParser& p)
     default:
         throw std::domain_error(JsonParser::toString(p.peek()));
     }
-
 }
 
-Entity loadEntity(const char* text)
+Entity readEntity(JsonParser& p, size_t maxDepth)
 {
-    return loadEntity(reinterpret_cast<const uint8_t*>(text), ::strlen(text));
+    return readEntityImpl(p, 0, maxDepth);
 }
 
-Entity loadEntity(InputStream& in)
+Entity loadEntity(const char* text, size_t maxDepth)
+{
+    return loadEntity(reinterpret_cast<const uint8_t*>(text), ::strlen(text), maxDepth);
+}
+
+Entity loadEntity(InputStream& in, size_t maxDepth)
 {
     JsonParser p;
     p.init(in);
-    return readEntity(p);
+    return readEntity(p, maxDepth);
 }
 
-Entity loadEntity(const uint8_t* text, size_t len)
+Entity loadEntity(const uint8_t* text, size_t len, size_t maxDepth)
 {
     std::unique_ptr<InputStream> in = memoryInputStream(text, len);
-    return loadEntity(*in);
+    return loadEntity(*in, maxDepth);
 }
 
 void writeEntity(JsonGenerator<JsonNullFormatter>& g, const Entity& n)

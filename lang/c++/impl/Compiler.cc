@@ -66,7 +66,8 @@ static NodePtr makePrimitive(const string& t)
     }
 }
 
-static NodePtr makeNode(const json::Entity& e, SymbolTable& st, const string &ns);
+static NodePtr makeNode(const json::Entity& e, SymbolTable& st, const string &ns,
+    size_t depth = 0, size_t maxDepth = 0);
 
 template <typename T>
 concepts::SingleAttribute<T> asSingleAttribute(const T& t)
@@ -292,13 +293,14 @@ static GenericDatum makeGenericDatum(NodePtr n,
 }
 
 
-static Field makeField(const Entity& e, SymbolTable& st, const string& ns)
+static Field makeField(const Entity& e, SymbolTable& st, const string& ns,
+    size_t depth, size_t maxDepth)
 {
     const Object& m = e.objectValue();
     const string& n = getStringField(e, m, "name");
     Object::const_iterator it = findField(e, m, "type");
     map<string, Entity>::const_iterator it2 = m.find("default");
-    NodePtr node = makeNode(it->second, st, ns);
+    NodePtr node = makeNode(it->second, st, ns, depth, maxDepth);
     if (containsField(m, "doc")) {
         node->setDoc(getDocField(e, m));
     }
@@ -310,14 +312,15 @@ static Field makeField(const Entity& e, SymbolTable& st, const string& ns)
 // Extended makeRecordNode (with doc).
 static NodePtr makeRecordNode(const Entity& e, const Name& name,
                               const string* doc, const Object& m,
-                              SymbolTable& st, const string& ns) {
+                              SymbolTable& st, const string& ns,
+                              size_t depth, size_t maxDepth) {
     const Array& v = getArrayField(e, m, "fields");
     concepts::MultiAttribute<string> fieldNames;
     concepts::MultiAttribute<NodePtr> fieldValues;
     vector<GenericDatum> defaultValues;
 
     for (Array::const_iterator it = v.begin(); it != v.end(); ++it) {
-        Field f = makeField(*it, st, ns);
+        Field f = makeField(*it, st, ns, depth, maxDepth);
         fieldNames.add(f.name);
         fieldValues.add(f.schema);
         defaultValues.push_back(f.defaultValue);
@@ -411,11 +414,11 @@ static NodePtr makeFixedNode(const Entity& e,
 }
 
 static NodePtr makeArrayNode(const Entity& e, const Object& m,
-    SymbolTable& st, const string& ns)
+    SymbolTable& st, const string& ns, size_t depth, size_t maxDepth)
 {
     Object::const_iterator it = findField(e, m, "items");
     NodePtr node = NodePtr(new NodeArray(
-        asSingleAttribute(makeNode(it->second, st, ns))));
+        asSingleAttribute(makeNode(it->second, st, ns, depth + 1, maxDepth))));
     if (containsField(m, "doc")) {
         node->setDoc(getDocField(e, m));
     }
@@ -423,12 +426,12 @@ static NodePtr makeArrayNode(const Entity& e, const Object& m,
 }
 
 static NodePtr makeMapNode(const Entity& e, const Object& m,
-    SymbolTable& st, const string& ns)
+    SymbolTable& st, const string& ns, size_t depth, size_t maxDepth)
 {
     Object::const_iterator it = findField(e, m, "values");
 
     NodePtr node = NodePtr(new NodeMap(
-        asSingleAttribute(makeNode(it->second, st, ns))));
+        asSingleAttribute(makeNode(it->second, st, ns, depth + 1, maxDepth))));
     if (containsField(m, "doc")) {
         node->setDoc(getDocField(e, m));
     }
@@ -458,7 +461,7 @@ static Name getName(const Entity& e, const Object& m, const string& ns)
 }
 
 static NodePtr makeNode(const Entity& e, const Object& m,
-    SymbolTable& st, const string& ns)
+    SymbolTable& st, const string& ns, size_t depth, size_t maxDepth)
 {
     const string& type = getStringField(e, m, "type");
     NodePtr result;
@@ -472,12 +475,14 @@ static NodePtr makeNode(const Entity& e, const Object& m,
             if (containsField(m, "doc")) {
                 string doc = getDocField(e, m);
 
-                NodePtr r = makeRecordNode(e, nm, &doc, m, st, nm.ns());
+                NodePtr r = makeRecordNode(e, nm, &doc, m, st, nm.ns(),
+                    depth + 1, maxDepth);
                 (std::dynamic_pointer_cast<NodeRecord>(r))->swap(
                     *std::dynamic_pointer_cast<NodeRecord>(result));
             } else {  // No doc
                 NodePtr r =
-                    makeRecordNode(e, nm, NULL, m, st, nm.ns());
+                    makeRecordNode(e, nm, NULL, m, st, nm.ns(),
+                        depth + 1, maxDepth);
                 (std::dynamic_pointer_cast<NodeRecord>(r))
                     ->swap(*std::dynamic_pointer_cast<NodeRecord>(result));
             }
@@ -487,9 +492,9 @@ static NodePtr makeNode(const Entity& e, const Object& m,
             st[nm] = result;
         }
     } else if (type == "array") {
-        result = makeArrayNode(e, m, st, ns);
+        result = makeArrayNode(e, m, st, ns, depth, maxDepth);
     } else if (type == "map") {
-        result = makeMapNode(e, m, st, ns);
+        result = makeMapNode(e, m, st, ns, depth, maxDepth);
     } else {
         result = makePrimitive(type);
     }
@@ -509,35 +514,40 @@ static NodePtr makeNode(const Entity& e, const Object& m,
 }
 
 static NodePtr makeNode(const Entity& e, const Array& m,
-    SymbolTable& st, const string& ns)
+    SymbolTable& st, const string& ns, size_t depth, size_t maxDepth)
 {
     concepts::MultiAttribute<NodePtr> mm;
     for (Array::const_iterator it = m.begin(); it != m.end(); ++it) {
-        mm.add(makeNode(*it, st, ns));
+        mm.add(makeNode(*it, st, ns, depth + 1, maxDepth));
     }
     return NodePtr(new NodeUnion(mm));
 }
 
-static NodePtr makeNode(const json::Entity& e, SymbolTable& st, const string& ns)
+static NodePtr makeNode(const json::Entity& e, SymbolTable& st, const string& ns,
+    size_t depth, size_t maxDepth)
 {
+    if (maxDepth > 0 && depth > maxDepth) {
+        throw Exception("Avro schema nesting depth exceeds the limit");
+    }
+
     switch (e.type()) {
     case json::etString:
         return makeNode(e.stringValue(), st, ns);
     case json::etObject:
-        return makeNode(e, e.objectValue(), st, ns);
+        return makeNode(e, e.objectValue(), st, ns, depth, maxDepth);
     case json::etArray:
-        return makeNode(e, e.arrayValue(), st, ns);
+        return makeNode(e, e.arrayValue(), st, ns, depth, maxDepth);
     default:
         throw Exception(boost::format("Invalid Avro type: %1%") % e.toString());
     }
 }
 
-ValidSchema compileJsonSchemaFromStream(InputStream& is)
+ValidSchema compileJsonSchemaFromStream(InputStream& is, size_t maxDepth)
 {
-    json::Entity e = json::loadEntity(is);
+    json::Entity e = json::loadEntity(is, maxDepth);
     SymbolTable st;
-    NodePtr n = makeNode(e, st, "");
-    return ValidSchema(n);
+    NodePtr n = makeNode(e, st, "", 0, maxDepth);
+    return ValidSchema(n, maxDepth);
 }
 
 AVRO_DECL ValidSchema compileJsonSchemaFromFile(const char* filename)
@@ -546,36 +556,39 @@ AVRO_DECL ValidSchema compileJsonSchemaFromFile(const char* filename)
     return compileJsonSchemaFromStream(*s);
 }
 
-AVRO_DECL ValidSchema compileJsonSchemaFromMemory(const uint8_t* input, size_t len)
+AVRO_DECL ValidSchema compileJsonSchemaFromMemory(const uint8_t* input, size_t len,
+    size_t maxDepth)
 {
-    return compileJsonSchemaFromStream(*memoryInputStream(input, len));
+    return compileJsonSchemaFromStream(*memoryInputStream(input, len), maxDepth);
 }
 
-AVRO_DECL ValidSchema compileJsonSchemaFromString(const char* input)
+AVRO_DECL ValidSchema compileJsonSchemaFromString(const char* input,
+    size_t maxDepth)
 {
     return compileJsonSchemaFromMemory(reinterpret_cast<const uint8_t*>(input),
-        ::strlen(input));
+        ::strlen(input), maxDepth);
 }
 
-AVRO_DECL ValidSchema compileJsonSchemaFromString(const string& input)
+AVRO_DECL ValidSchema compileJsonSchemaFromString(const string& input,
+    size_t maxDepth)
 {
     return compileJsonSchemaFromMemory(
-        reinterpret_cast<const uint8_t*>(input.data()), input.size());
+        reinterpret_cast<const uint8_t*>(input.data()), input.size(), maxDepth);
 }
 
-static ValidSchema compile(std::istream& is)
+static ValidSchema compile(std::istream& is, size_t maxDepth = 0)
 {
     std::unique_ptr<InputStream> in = istreamInputStream(is);
-    return compileJsonSchemaFromStream(*in);
+    return compileJsonSchemaFromStream(*in, maxDepth);
 }
 
-void compileJsonSchema(std::istream &is, ValidSchema &schema)
+void compileJsonSchema(std::istream &is, ValidSchema &schema, size_t maxDepth)
 {
     if (!is.good()) {
         throw Exception("Input stream is not good");
     }
 
-    schema = compile(is);
+    schema = compile(is, maxDepth);
 }
 
 AVRO_DECL bool compileJsonSchema(std::istream &is, ValidSchema &schema, string &error)

@@ -38,7 +38,8 @@ class AVRO_DECL ValidSchema;
 /// ValidSchema object.  Throws if the schema cannot be compiled to a valid
 /// schema
 
-AVRO_DECL void compileJsonSchema(std::istream &is, ValidSchema &schema);
+AVRO_DECL void compileJsonSchema(std::istream &is, ValidSchema &schema,
+    size_t maxDepth = 0);
 
 /// Non-throwing version of compileJsonSchema.
 ///
@@ -48,13 +49,17 @@ AVRO_DECL void compileJsonSchema(std::istream &is, ValidSchema &schema);
 AVRO_DECL bool compileJsonSchema(std::istream &is, ValidSchema &schema,
     std::string &error);
 
-AVRO_DECL ValidSchema compileJsonSchemaFromStream(InputStream& is);
+AVRO_DECL ValidSchema compileJsonSchemaFromStream(InputStream& is,
+    size_t maxDepth = 0);
 
-AVRO_DECL ValidSchema compileJsonSchemaFromMemory(const uint8_t* input, size_t len);
+AVRO_DECL ValidSchema compileJsonSchemaFromMemory(const uint8_t* input, size_t len,
+    size_t maxDepth = 0);
 
-AVRO_DECL ValidSchema compileJsonSchemaFromString(const char* input);
+AVRO_DECL ValidSchema compileJsonSchemaFromString(const char* input,
+    size_t maxDepth = 0);
 
-AVRO_DECL ValidSchema compileJsonSchemaFromString(const std::string& input);
+AVRO_DECL ValidSchema compileJsonSchemaFromString(const std::string& input,
+    size_t maxDepth = 0);
 
 AVRO_DECL ValidSchema compileJsonSchemaFromFile(const char* filename);
 

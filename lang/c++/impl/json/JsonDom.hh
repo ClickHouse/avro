@@ -146,11 +146,11 @@ template <> struct type_traits<std::map<std::string, Entity> > {
     static const char* name() { return "object"; }
 };
 
-AVRO_DECL Entity readEntity(JsonParser& p);
+AVRO_DECL Entity readEntity(JsonParser& p, size_t maxDepth = 0);
 
-AVRO_DECL Entity loadEntity(InputStream& in);
-AVRO_DECL Entity loadEntity(const char* text);
-AVRO_DECL Entity loadEntity(const uint8_t* text, size_t len);
+AVRO_DECL Entity loadEntity(InputStream& in, size_t maxDepth = 0);
+AVRO_DECL Entity loadEntity(const char* text, size_t maxDepth = 0);
+AVRO_DECL Entity loadEntity(const uint8_t* text, size_t len, size_t maxDepth = 0);
 
 void writeEntity(JsonGenerator<JsonNullFormatter>& g, const Entity& n);
 

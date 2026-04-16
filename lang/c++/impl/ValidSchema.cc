@@ -34,8 +34,13 @@ using std::static_pointer_cast;
 namespace avro {
 typedef std::map<Name, NodePtr> SymbolMap;
 
-static bool validate(const NodePtr &node, SymbolMap &symbolMap)
+static bool validate(const NodePtr &node, SymbolMap &symbolMap,
+    size_t depth, size_t maxDepth)
 {
+    if (maxDepth > 0 && depth > maxDepth) {
+        throw Exception("Avro schema nesting depth exceeds the limit");
+    }
+
     if (! node->isValid()) {
         throw Exception(format("Schema is invalid, due to bad node of type %1%")
             % node->type());
@@ -71,7 +76,7 @@ static bool validate(const NodePtr &node, SymbolMap &symbolMap)
     for (size_t i = 0; i < leaves; ++i) {
         const NodePtr &leaf(node->leafAt(i));
 
-        if (! validate(leaf, symbolMap)) {
+        if (! validate(leaf, symbolMap, depth + 1, maxDepth)) {
 
             // if validate returns false it means a node with this name already
             // existed in the map, instead of keeping this node twice in the
@@ -86,20 +91,20 @@ static bool validate(const NodePtr &node, SymbolMap &symbolMap)
     return true;
 }
 
-static void validate(const NodePtr& p)
+static void validate(const NodePtr& p, size_t maxDepth = 0)
 {
     SymbolMap m;
-    validate(p, m);
+    validate(p, m, 0, maxDepth);
 }
 
-ValidSchema::ValidSchema(const NodePtr &root) : root_(root)
+ValidSchema::ValidSchema(const NodePtr &root, size_t maxDepth) : root_(root)
 {
-    validate(root_);
+    validate(root_, maxDepth);
 }
 
-ValidSchema::ValidSchema(const Schema &schema) : root_(schema.root())
+ValidSchema::ValidSchema(const Schema &schema, size_t maxDepth) : root_(schema.root())
 {
-    validate(root_);
+    validate(root_, maxDepth);
 }
 
 ValidSchema::ValidSchema() : root_(NullSchema().root())

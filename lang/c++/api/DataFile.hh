@@ -203,6 +203,7 @@ class AVRO_DECL DataFileReaderBase : boost::noncopyable {
 
     Metadata metadata_;
     DataFileSync sync_;
+    size_t maxSchemaDepth_;
 
     // for compressed buffer
     std::unique_ptr<boost::iostreams::filtering_istream> os_;
@@ -234,9 +235,10 @@ public:
      * This function should be called exactly once after constructing
      * the DataFileReaderBase object.
      */
-    DataFileReaderBase(const char* filename);
+    DataFileReaderBase(const char* filename, size_t maxSchemaDepth = 0);
 
-    DataFileReaderBase(std::unique_ptr<InputStream> inputStream);
+    DataFileReaderBase(std::unique_ptr<InputStream> inputStream,
+        size_t maxSchemaDepth = 0);
 
     /**
      * Initializes the reader so that the reader and writer schemas

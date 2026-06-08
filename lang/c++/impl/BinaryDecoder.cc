@@ -18,6 +18,7 @@
 
 #define __STDC_LIMIT_MACROS
 
+#include <algorithm>
 #include <memory>
 #include "Decoder.hh"
 #include "Zigzag.hh"
@@ -26,6 +27,28 @@
 namespace avro {
 
 using std::make_shared;
+
+namespace {
+/// ClickHouse: read `len` bytes into `value`, growing it incrementally instead of resizing to the
+/// full (attacker-controlled) length up front. A corrupted Avro string/bytes length prefix could
+/// otherwise force a multi-gigabyte allocation before any data is read (the read then fails at EOF),
+/// bypassing the memory limit. Reading in bounded chunks caps the allocation to the bytes actually
+/// present; std::string/std::vector still grow capacity geometrically, so a legitimately large value
+/// stays amortized-linear.
+template <typename Container, typename Reader>
+void readSizedInto(Reader & in, Container & value, size_t len)
+{
+    value.clear();
+    constexpr size_t max_chunk = 64 * 1024;
+    while (value.size() < len)
+    {
+        size_t old_size = value.size();
+        size_t n = std::min(len - old_size, max_chunk);
+        value.resize(old_size + n);
+        in.readBytes(reinterpret_cast<uint8_t *>(&value[old_size]), n);
+    }
+}
+}
 
 class BinaryDecoder : public Decoder {
     StreamReader in_;
@@ -133,11 +156,7 @@ void BinaryDecoder::drain()
 void BinaryDecoder::decodeString(std::string& value)
 {
     size_t len = doDecodeLength();
-    value.resize(len);
-    if (len > 0) {
-        in_.readBytes(const_cast<uint8_t*>(
-                    reinterpret_cast<const uint8_t*>(value.c_str())), len);
-    }
+    readSizedInto(in_, value, len);
 }
 
 void BinaryDecoder::skipString()
@@ -149,10 +168,7 @@ void BinaryDecoder::skipString()
 void BinaryDecoder::decodeBytes(std::vector<uint8_t>& value)
 {
     size_t len = doDecodeLength();
-    value.resize(len);
-    if (len > 0) {
-        in_.readBytes(value.data(), len);
-    }
+    readSizedInto(in_, value, len);
 }
 
 void BinaryDecoder::skipBytes()

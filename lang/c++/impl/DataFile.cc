@@ -293,17 +293,20 @@ void DataFileWriterBase::setMetadata(const string& key, const string& value)
     metadata_[key] = v;
 }
 
-DataFileReaderBase::DataFileReaderBase(const char* filename) :
+DataFileReaderBase::DataFileReaderBase(const char* filename,
+    size_t maxSchemaDepth) :
     filename_(filename), stream_(fileSeekableInputStream(filename)),
     decoder_(binaryDecoder()), objectCount_(0), eof_(false), blockStart_(-1),
-    blockEnd_(-1)
+    blockEnd_(-1), maxSchemaDepth_(maxSchemaDepth)
 {
     readHeader();
 }
 
-DataFileReaderBase::DataFileReaderBase(std::unique_ptr<InputStream> inputStream) :
+DataFileReaderBase::DataFileReaderBase(std::unique_ptr<InputStream> inputStream,
+    size_t maxSchemaDepth) :
     filename_(""), stream_(std::move(inputStream)),
-    decoder_(binaryDecoder()), objectCount_(0), eof_(false)
+    decoder_(binaryDecoder()), objectCount_(0), eof_(false),
+    maxSchemaDepth_(maxSchemaDepth)
 {
     readHeader();
 }
@@ -517,11 +520,11 @@ static string toString(const vector<uint8_t>& v)
     return result;
 }
 
-static ValidSchema makeSchema(const vector<uint8_t>& v)
+static ValidSchema makeSchema(const vector<uint8_t>& v, size_t maxDepth = 0)
 {
     istringstream iss(toString(v));
     ValidSchema vs;
-    compileJsonSchema(iss, vs);
+    compileJsonSchema(iss, vs, maxDepth);
     return ValidSchema(vs);
 }
 
@@ -540,7 +543,7 @@ void DataFileReaderBase::readHeader()
         throw Exception("No schema in metadata");
     }
 
-    dataSchema_ = makeSchema(it->second);
+    dataSchema_ = makeSchema(it->second, maxSchemaDepth_);
     if (! readerSchema_.root()) {
         readerSchema_ = dataSchema();
     }

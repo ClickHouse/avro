@@ -191,6 +191,11 @@ public:
         testWriteWithCodec(avro::NULL_CODEC);
     }
 
+    void testWriteEmpty() {
+        avro::DataFileWriter<ComplexInteger> df(filename, writerSchema, 100);
+        df.close();
+    }
+
     void testWriteWithDeflateCodec() {
         testWriteWithCodec(avro::DEFLATE_CODEC);
     }
@@ -766,7 +771,7 @@ init_unit_test_suite(int argc, char *argv[])
     {
         test_suite *ts = BOOST_TEST_SUITE("DataFile tests: test0.df");
         shared_ptr<DataFileTest> t1(new DataFileTest("test1.d0", sch, isch, 0));
-        ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testWrite, t1));
+        ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testWriteEmpty, t1));
         addReaderTests(ts, t1);
         boost::unit_test::framework::master_test_suite().add(ts);
     }

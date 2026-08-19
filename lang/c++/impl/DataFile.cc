@@ -134,7 +134,12 @@ DataFileWriterBase::~DataFileWriterBase()
 
 void DataFileWriterBase::close()
 {
-    flush();
+    if (!metadata_is_written_) {
+        metadata_is_written_ = true;
+        writeHeader();
+    }
+    if (objectCount_ > 0)
+        flush();
     stream_.reset();
 }
 

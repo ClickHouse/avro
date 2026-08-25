@@ -354,8 +354,14 @@ bool DataFileReaderBase::hasMore()
     for (; ;) {
         if (eof_) {
             return false;
-        } else if (objectCount_ != 0) {
+        } else if (objectCount_ > 0) {
             return true;
+        } else if (objectCount_ < 0) {
+            /// ClickHouse: unreachable - `readDataBlock()` rejects a negative count from the wire and
+            /// `decr()` only runs once this has returned true. Stated so that a caller decrementing
+            /// without asking fails here, instead of looping without end as `!= 0` used to allow.
+            throw Exception(boost::format(
+                "Invalid data file. Object count in block went below zero: %1%") % objectCount_);
         }
 
         dataDecoder_->init(*dataStream_);
@@ -427,6 +433,19 @@ void DataFileReaderBase::readDataBlock()
     avro::decode(*decoder_, objectCount_);
     int64_t byteCount;
     avro::decode(*decoder_, byteCount);
+
+    /// ClickHouse: a corrupted header can make either count negative. A negative object count never
+    /// reaches zero through `decr()`, so the reader never terminates; a negative byte count wraps in
+    /// the cast below into an unbounded payload limit. The spec has both as non-negative.
+    if (objectCount_ < 0) {
+        throw Exception(boost::format(
+            "Invalid data file. Negative object count in block header: %1%") % objectCount_);
+    }
+    if (byteCount < 0) {
+        throw Exception(boost::format(
+            "Invalid data file. Negative byte count in block header: %1%") % byteCount);
+    }
+
     decoder_->init(*stream_);
     blockEnd_ = stream_->byteCount() + byteCount;
 

@@ -19,7 +19,9 @@
 #include "DataFile.hh"
 #include "Compiler.hh"
 #include "Exception.hh"
+#include "NodeImpl.hh"
 
+#include <algorithm>
 #include <sstream>
 
 #include <boost/random/mersenne_twister.hpp>
@@ -62,6 +64,73 @@ boost::iostreams::zlib_params get_zlib_params() {
   ret.method = boost::iostreams::zlib::deflated;
   ret.noheader = true;
   return ret;
+}
+
+/// ClickHouse: bound on the recursion below, independent of `maxSchemaDepth_` (that one bounds the
+/// textual nesting of a schema definition; a named type may reference itself and reach this function
+/// again after a single, shallow lookup, so recursion depth here is a separate concern).
+constexpr size_t minEncodedBytesMaxDepth = 64;
+
+/// ClickHouse: a lower bound, in bytes, on what a single value of this schema can encode to. Cases
+/// this cannot determine return 0, which only relaxes the bound and never rejects a legitimate file.
+size_t minEncodedBytes(const NodePtr &nodeIn, size_t depth)
+{
+    if (depth > minEncodedBytesMaxDepth) {
+        return 0;
+    }
+    NodePtr node = nodeIn;
+    if (node->type() == AVRO_SYMBOLIC) {
+        /// `resolveSymbol` throws rather than returning null on an expired weak_ptr; treat that the
+        /// same as "unknown" rather than let it surface as this file being unreadable.
+        try {
+            node = resolveSymbol(node);
+        } catch (const Exception &) {
+            return 0;
+        }
+    }
+    switch (node->type()) {
+        case AVRO_NULL:
+            return 0;
+        case AVRO_FLOAT:
+            return 4;
+        case AVRO_DOUBLE:
+            return 8;
+        case AVRO_FIXED:
+            return static_cast<size_t>(std::max(0, node->fixedSize()));
+        case AVRO_RECORD:
+        {
+            size_t total = 0;
+            for (size_t i = 0; i < node->leaves(); ++i) {
+                total += minEncodedBytes(node->leafAt(i), depth + 1);
+            }
+            return total;
+        }
+        case AVRO_UNION:
+        {
+            if (node->leaves() == 0) {
+                return 0;
+            }
+            size_t best = minEncodedBytes(node->leafAt(0), depth + 1);
+            for (size_t i = 1; i < node->leaves(); ++i) {
+                best = std::min(best, minEncodedBytes(node->leafAt(i), depth + 1));
+            }
+            /// One byte for the branch discriminant, on top of the cheapest branch's own content.
+            return 1 + best;
+        }
+        case AVRO_BOOL:
+        case AVRO_INT:
+        case AVRO_LONG:
+        case AVRO_ENUM:
+        case AVRO_STRING:
+        case AVRO_BYTES:
+        case AVRO_ARRAY:
+        case AVRO_MAP:
+            /// A one-byte zigzag varint: the smallest boolean/int/long value, an enum symbol's
+            /// index, or the zero-length prefix of a string/bytes/array/map.
+            return 1;
+        default:
+            return 0;
+    }
 }
 }
 
@@ -419,6 +488,19 @@ unique_ptr<InputStream> boundedInputStream(InputStream& in, size_t limit)
     return unique_ptr<InputStream>(new BoundedInputStream(in, limit));
 }
 
+void DataFileReaderBase::checkObjectCountFitsPayload(uint64_t availableBytes) const
+{
+    if (minEncodedBytesPerRecord_ == 0 || objectCount_ <= 0) {
+        return;
+    }
+    /// Division, not multiplication, so a huge `objectCount_` cannot overflow the comparison.
+    if (static_cast<uint64_t>(objectCount_) > availableBytes / minEncodedBytesPerRecord_) {
+        throw Exception(boost::format(
+            "Invalid data file. Object count %1% in block header cannot fit in %2% payload byte(s) "
+            "for this schema") % objectCount_ % availableBytes);
+    }
+}
+
 void DataFileReaderBase::readDataBlock()
 {
     decoder_->init(*stream_);
@@ -451,6 +533,10 @@ void DataFileReaderBase::readDataBlock()
 
     unique_ptr<InputStream> st = boundedInputStream(*stream_, static_cast<size_t>(byteCount));
     if (codec_ == NULL_CODEC) {
+        /// Uncompressed only: `byteCount` is then the exact payload size, so the two header fields
+        /// can be cross-checked directly. A compressed codec's `byteCount` is the compressed size,
+        /// which does not bound the decoded record count the same way.
+        checkObjectCountFitsPayload(static_cast<uint64_t>(byteCount));
         dataDecoder_->init(*st);
         dataStream_ = std::move(st);
     } else if (codec_ == ZSTD_CODEC) {
@@ -499,6 +585,9 @@ void DataFileReaderBase::readDataBlock()
         if (checksum != c) {
             throw Exception(boost::format("Checksum did not match for Snappy compression: Expected: %1%, computed: %2%") % checksum % c);
         }
+        /// Snappy decompresses eagerly above, so the true decoded size is already known here, unlike
+        /// zstd/deflate below which decode lazily through a filtering stream.
+        checkObjectCountFitsPayload(uncompressed.size());
         os_.reset(new boost::iostreams::filtering_istream());
         os_->push(
                 boost::iostreams::basic_array_source<char>(uncompressed.c_str(),
@@ -566,6 +655,7 @@ void DataFileReaderBase::readHeader()
     if (! readerSchema_.root()) {
         readerSchema_ = dataSchema();
     }
+    minEncodedBytesPerRecord_ = minEncodedBytes(dataSchema_.root(), 0);
 
     it = metadata_.find(AVRO_CODEC_KEY);
     if (it != metadata_.end() && toString(it->second) == AVRO_DEFLATE_CODEC) {

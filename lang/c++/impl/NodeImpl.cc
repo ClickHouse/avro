@@ -296,6 +296,9 @@ NodeRecord::printJson(std::ostream &os, int depth) const
                                                        depth);
           }
         }
+        if (fieldIdAt(i) >= 0) {
+            os << ",\n" << indent(depth) << "\"field-id\": " << fieldIdAt(i);
+        }
         os << '\n';
         os << indent(--depth) << '}';
     }
@@ -485,6 +488,10 @@ NodeArray::printJson(std::ostream &os, int depth) const
 {
     os << "{\n";
     os << indent(depth+1) << "\"type\": \"array\",\n";
+    if (logicalType().type() != LogicalType::NONE) {
+        logicalType().printJson(os << indent(depth+1));
+        os << ",\n";
+    }
     if (getDoc().size()) {
         os << indent(depth+1) << "\"doc\": \""
            << escape(getDoc()) << "\",\n";
@@ -496,6 +503,9 @@ NodeArray::printJson(std::ostream &os, int depth) const
     }
     os << indent(depth+1) <<  "\"items\": ";
     leafAttributes_.get()->printJson(os, depth+1);
+    if (elementId_ >= 0) {
+        os << ",\n" << indent(depth+1) << "\"element-id\": " << elementId_;
+    }
     os << '\n';
     os << indent(depth) << '}';
 }

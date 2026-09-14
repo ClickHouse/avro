@@ -214,6 +214,23 @@ public:
         df.close();
     }
 
+    void testWriteMetadata() {
+        {
+            avro::DataFileWriter<ComplexInteger> df(filename, writerSchema, 100);
+            df.setMetadata("user.key", "user.value");
+            df.close();
+        }
+        avro::DataFileReaderBase reader(filename);
+        reader.init();
+        const auto& metadata = reader.metadata();
+        const auto it = metadata.find("user.key");
+        BOOST_REQUIRE(it != metadata.end());
+        BOOST_CHECK_EQUAL(string(it->second.begin(), it->second.end()),
+            "user.value");
+        BOOST_CHECK(!reader.hasMore());
+        reader.close();
+    }
+
     void testWriteGeneric() {
         avro::DataFileWriter<Pair> df(filename, writerSchema, 100);
         int64_t re = 3;
@@ -880,6 +897,13 @@ init_unit_test_suite(int argc, char *argv[])
         shared_ptr<DataFileTest> t(new DataFileTest("test12.df", ischWithDoc, ischWithDoc));
         ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testWrite, t));
         ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testSchemaReadWriteWithDoc, t));
+        ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testCleanup, t));
+        boost::unit_test::framework::master_test_suite().add(ts);
+    }
+    {
+        test_suite *ts = BOOST_TEST_SUITE("DataFile tests: test13.df");
+        shared_ptr<DataFileTest> t(new DataFileTest("test13.df", sch, sch));
+        ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testWriteMetadata, t));
         ts->add(BOOST_CLASS_TEST_CASE(&DataFileTest::testCleanup, t));
         boost::unit_test::framework::master_test_suite().add(ts);
     }

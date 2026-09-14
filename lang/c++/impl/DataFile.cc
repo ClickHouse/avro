@@ -142,6 +142,10 @@ void DataFileWriterBase::sync()
         metadata_is_written_ = true;
         writeHeader();
     }
+
+    if (objectCount_ == 0)
+        return;
+
     encoderPtr_->flush();
 
     encoderPtr_->init(*stream_);

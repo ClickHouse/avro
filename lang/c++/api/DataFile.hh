@@ -205,6 +205,12 @@ class AVRO_DECL DataFileReaderBase : boost::noncopyable {
     DataFileSync sync_;
     size_t maxSchemaDepth_;
 
+    /// ClickHouse: a lower bound, in bytes, on what a single record of `dataSchema_` can encode to;
+    /// computed once the schema is known. Zero means no bound could be derived (e.g. every field can
+    /// encode to zero bytes), in which case the block header's counts are not cross-checked.
+    size_t minEncodedBytesPerRecord_ = 0;
+    void checkObjectCountFitsPayload(uint64_t availableBytes) const;
+
     // for compressed buffer
     std::unique_ptr<boost::iostreams::filtering_istream> os_;
     std::vector<char> compressed_;

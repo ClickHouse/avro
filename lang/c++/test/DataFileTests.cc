@@ -639,17 +639,27 @@ public:
     }
 
     void testSchemaReadWriteWithDoc() {
-        uint32_t a=42;
+        // ClickHouse: the datum has to match the schema the header declares. This wrote a bare
+        // uint32_t through a six-long record, so the header promised more bytes per record than
+        // the payload carried, and readDataBlock now rejects that - it cross-checks a block's
+        // declared object count against the payload. The subject of the test is the doc strings.
+        const int64_t a = 42;
         {
-          avro::DataFileWriter<uint32_t> df(filename, writerSchema);
-          df.write(a);
+          avro::DataFileWriter<Pair> df(filename, writerSchema);
+          Pair p(writerSchema, GenericDatum(writerSchema.root()));
+          GenericRecord& r = p.second.value<GenericRecord>();
+          for (size_t i = 0; i < r.fieldCount(); ++i) {
+              r.fieldAt(i) = a;
+          }
+          df.write(p);
         }
 
         {
-          avro::DataFileReader<uint32_t> df(filename);
-          uint32_t b;
-          df.read(b);
-          BOOST_CHECK_EQUAL(b, a);
+          avro::DataFileReader<Pair> df(filename);
+          Pair p(df.readerSchema(), GenericDatum());
+          BOOST_REQUIRE(df.read(p));
+          BOOST_CHECK_EQUAL(
+              p.second.value<GenericRecord>().fieldAt(0).value<int64_t>(), a);
 
           const NodePtr& root = df.readerSchema().root();
           BOOST_CHECK_EQUAL(root->getDoc(), "record_doc");

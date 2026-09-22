@@ -206,8 +206,10 @@ class AVRO_DECL DataFileReaderBase : boost::noncopyable {
     size_t maxSchemaDepth_;
 
     /// ClickHouse: a lower bound, in bytes, on what a single record of `dataSchema_` can encode to;
-    /// computed once the schema is known. Zero means no bound could be derived (e.g. every field can
-    /// encode to zero bytes), in which case the block header's counts are not cross-checked.
+    /// computed once the schema is known. Zero means there is no usable bound - either a record of
+    /// this schema really can encode to nothing, or the walk met something it could not reason
+    /// about - and in both cases the declared object count is left unchecked. Ask
+    /// `checksDeclaredObjectCount` rather than reading a zero here as a bound.
     size_t minEncodedBytesPerRecord_ = 0;
     void checkObjectCountFitsPayload(uint64_t availableBytes) const;
 
@@ -234,6 +236,19 @@ public:
      * Decrements the number of objects yet to read.
      */
     void decr() { --objectCount_; }
+
+    /**
+     * ClickHouse: whether this reader cross-checks every block's declared object count against
+     * the payload the block actually carries, so that a corrupted header cannot inflate the count.
+     *
+     * A caller that answers a row count from the block headers alone, without decoding the rows,
+     * is only sound while this is true. It depends on both the codec and the schema, so neither
+     * can be used as a proxy for it: the check needs a decoded payload size the header cannot
+     * fabricate, and a per-record minimum size greater than zero to divide it by.
+     *
+     * Call after init(); the answer is fixed for the life of the reader.
+     */
+    bool checksDeclaredObjectCount() const;
 
     /**
      * Constructs the reader for the given file and the reader is

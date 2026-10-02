@@ -51,11 +51,14 @@ GenericReader::GenericReader(const ValidSchema& writerSchema,
 void GenericReader::read(GenericDatum& datum) const
 {
     datum = GenericDatum(schema_.root());
-    read(datum, *decoder_, isResolving_);
+    read(datum, *decoder_, isResolving_, 0);
 }
 
-void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving)
+void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth)
 {
+    if (depth >= GenericDatum::maxNestingDepth) {
+        throw Exception(boost::format("Cannot read a datum nested deeper than %1% levels") % GenericDatum::maxNestingDepth);
+    }
     if (datum.isUnion()) {
         datum.selectBranch(d.decodeUnionIndex());
     }
@@ -98,11 +101,11 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving)
                 std::vector<size_t> fo =
                     static_cast<ResolvingDecoder&>(d).fieldOrder();
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(fo[i]), d, isResolving);
+                    read(r.fieldAt(fo[i]), d, isResolving, depth + 1);
                 }
             } else {
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(i), d, isResolving);
+                    read(r.fieldAt(i), d, isResolving, depth + 1);
                 }
             }
         }
@@ -121,7 +124,7 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving)
                 r.resize(r.size() + m);
                 for (; start < r.size(); ++start) {
                     r[start] = GenericDatum(nn);
-                    read(r[start], d, isResolving);
+                    read(r[start], d, isResolving, depth + 1);
                 }
             }
         }
@@ -138,7 +141,7 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving)
                 for (; start < r.size(); ++start) {
                     d.decodeString(r[start].first);
                     r[start].second = GenericDatum(nn);
-                    read(r[start].second, d, isResolving);
+                    read(r[start].second, d, isResolving, depth + 1);
                 }
             }
         }
@@ -157,7 +160,7 @@ void GenericReader::read(Decoder& d, GenericDatum& g, const ValidSchema& s)
 
 void GenericReader::read(Decoder& d, GenericDatum& g)
 {
-    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0);
+    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0, 0);
 }
 
 GenericWriter::GenericWriter(const ValidSchema& s, const EncoderPtr& encoder) :

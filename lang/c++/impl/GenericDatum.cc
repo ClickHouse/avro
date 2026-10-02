@@ -24,6 +24,10 @@ using std::vector;
 
 namespace avro {
 
+namespace {
+thread_local size_t initDepth = 0;
+}
+
 GenericDatum::GenericDatum(const ValidSchema& schema) :
     type_(schema.root()->type()),
     logicalType_(schema.root()->logicalType())
@@ -40,6 +44,12 @@ GenericDatum::GenericDatum(const NodePtr& schema) :
 
 void GenericDatum::init(const NodePtr& schema)
 {
+    if (initDepth >= maxNestingDepth) {
+        throw Exception(boost::format("Cannot build a datum nested deeper than %1% levels") % maxNestingDepth);
+    }
+    ++initDepth;
+    struct DepthRestore { ~DepthRestore() { --initDepth; } } depthRestore;
+
     NodePtr sc = schema;
     if (type_ == AVRO_SYMBOLIC) {
         sc = resolveSymbol(schema);

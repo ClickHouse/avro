@@ -80,6 +80,10 @@ protected:
 
     void init(const NodePtr& schema);
 public:
+    /// ClickHouse: a named type may reference itself, so building or reading a datum throws beyond this nesting depth
+    /// instead of recursing until the stack overflows.
+    static constexpr size_t maxNestingDepth = 256;
+
     /**
      * The avro data type this datum holds.
      */

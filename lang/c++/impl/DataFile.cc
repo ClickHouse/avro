@@ -22,6 +22,8 @@
 #include "NodeImpl.hh"
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <sstream>
 
 #include <boost/random/mersenne_twister.hpp>
@@ -66,72 +68,97 @@ boost::iostreams::zlib_params get_zlib_params() {
   return ret;
 }
 
-/// ClickHouse: bound on the recursion below, independent of `maxSchemaDepth_` (that one bounds the
-/// textual nesting of a schema definition; a named type may reference itself and reach this function
-/// again after a single, shallow lookup, so recursion depth here is a separate concern).
-constexpr size_t minEncodedBytesMaxDepth = 64;
+/// ClickHouse: a lower bound, in bytes, on what a single value of a schema can encode to.
+/// Memoised by resolved node identity: a schema is a DAG, so one field can inline a type another
+/// names, and an unmemoised walk doubles per level - in `readHeader`, before a caller can object.
+/// Zero means no usable bound, whatever the reason; ask `checksDeclaredObjectCount` instead of
+/// reading a zero as one.
+class MinEncodedBytesWalker {
+public:
+    size_t operator()(const NodePtr &node) { return visit(node); }
 
-/// ClickHouse: a lower bound, in bytes, on what a single value of this schema can encode to. Cases
-/// this cannot determine return 0, which only relaxes the bound and never rejects a legitimate file.
-size_t minEncodedBytes(const NodePtr &nodeIn, size_t depth)
-{
-    if (depth > minEncodedBytesMaxDepth) {
-        return 0;
-    }
-    NodePtr node = nodeIn;
-    if (node->type() == AVRO_SYMBOLIC) {
-        /// `resolveSymbol` throws rather than returning null on an expired weak_ptr; treat that the
-        /// same as "unknown" rather than let it surface as this file being unreadable.
-        try {
-            node = resolveSymbol(node);
-        } catch (const Exception &) {
-            return 0;
-        }
-    }
-    switch (node->type()) {
-        case AVRO_NULL:
-            return 0;
-        case AVRO_FLOAT:
-            return 4;
-        case AVRO_DOUBLE:
-            return 8;
-        case AVRO_FIXED:
-            return static_cast<size_t>(std::max(0, node->fixedSize()));
-        case AVRO_RECORD:
-        {
-            size_t total = 0;
-            for (size_t i = 0; i < node->leaves(); ++i) {
-                total += minEncodedBytes(node->leafAt(i), depth + 1);
-            }
-            return total;
-        }
-        case AVRO_UNION:
-        {
-            if (node->leaves() == 0) {
+private:
+    std::map<const Node *, size_t> memo_;
+    /// Nodes still being computed further up: a named type may reference itself. Cutting such a
+    /// cycle at zero is what replaces the depth cap, and is safe because every bound here is a
+    /// lower one - a cut can only weaken a result, never over-reject, so it is memoised too.
+    std::set<const Node *> on_path_;
+
+    size_t visit(const NodePtr &node_in)
+    {
+        NodePtr node = node_in;
+        if (node->type() == AVRO_SYMBOLIC) {
+            /// `resolveSymbol` throws rather than returning null on an expired weak_ptr; treat that
+            /// the same as "unknown" rather than let it surface as this file being unreadable.
+            try {
+                node = resolveSymbol(node);
+            } catch (const Exception &) {
                 return 0;
             }
-            size_t best = minEncodedBytes(node->leafAt(0), depth + 1);
-            for (size_t i = 1; i < node->leaves(); ++i) {
-                best = std::min(best, minEncodedBytes(node->leafAt(i), depth + 1));
-            }
-            /// One byte for the branch discriminant, on top of the cheapest branch's own content.
-            return 1 + best;
         }
-        case AVRO_BOOL:
-        case AVRO_INT:
-        case AVRO_LONG:
-        case AVRO_ENUM:
-        case AVRO_STRING:
-        case AVRO_BYTES:
-        case AVRO_ARRAY:
-        case AVRO_MAP:
-            /// A one-byte zigzag varint: the smallest boolean/int/long value, an enum symbol's
-            /// index, or the zero-length prefix of a string/bytes/array/map.
-            return 1;
-        default:
+        const Node *key = node.get();
+        const auto memoised = memo_.find(key);
+        if (memoised != memo_.end()) {
+            return memoised->second;
+        }
+        if (!on_path_.insert(key).second) {
+            /// Closes a cycle. Not memoised: this zero describes the arm that closed it, not the
+            /// node, whose own bound is still being computed by the frame that owns it.
             return 0;
+        }
+        const size_t result = compute(node);
+        on_path_.erase(key);
+        memo_.emplace(key, result);
+        return result;
     }
-}
+
+    size_t compute(const NodePtr &node)
+    {
+        switch (node->type()) {
+            case AVRO_NULL:
+                return 0;
+            case AVRO_FLOAT:
+                return 4;
+            case AVRO_DOUBLE:
+                return 8;
+            case AVRO_FIXED:
+                return static_cast<size_t>(std::max(0, node->fixedSize()));
+            case AVRO_RECORD:
+            {
+                size_t total = 0;
+                for (size_t i = 0; i < node->leaves(); ++i) {
+                    total += visit(node->leafAt(i));
+                }
+                return total;
+            }
+            case AVRO_UNION:
+            {
+                if (node->leaves() == 0) {
+                    return 0;
+                }
+                size_t best = visit(node->leafAt(0));
+                for (size_t i = 1; i < node->leaves(); ++i) {
+                    best = std::min(best, visit(node->leafAt(i)));
+                }
+                /// One byte for the branch discriminant, on top of the cheapest branch's own content.
+                return 1 + best;
+            }
+            case AVRO_BOOL:
+            case AVRO_INT:
+            case AVRO_LONG:
+            case AVRO_ENUM:
+            case AVRO_STRING:
+            case AVRO_BYTES:
+            case AVRO_ARRAY:
+            case AVRO_MAP:
+                /// A one-byte zigzag varint: the smallest boolean/int/long value, an enum symbol's
+                /// index, or the zero-length prefix of a string/bytes/array/map.
+                return 1;
+            default:
+                return 0;
+        }
+    }
+};
 }
 
 DataFileWriterBase::DataFileWriterBase(const char* filename, const ValidSchema& schema, size_t syncInterval,
@@ -494,6 +521,14 @@ unique_ptr<InputStream> boundedInputStream(InputStream& in, size_t limit)
     return unique_ptr<InputStream>(new BoundedInputStream(in, limit));
 }
 
+bool DataFileReaderBase::checksDeclaredObjectCount() const
+{
+    /// Snappy alone: it decompresses eagerly, so the size reaching `checkObjectCountFitsPayload`
+    /// is the real decoded one, arrived at after the CRC. Null is passed the header's own declared
+    /// byte count, which a file inflating both fields satisfies; zstd and deflate decode lazily.
+    return minEncodedBytesPerRecord_ > 0 && codec_ == SNAPPY_CODEC;
+}
+
 void DataFileReaderBase::checkObjectCountFitsPayload(uint64_t availableBytes) const
 {
     if (minEncodedBytesPerRecord_ == 0 || objectCount_ <= 0) {
@@ -661,7 +696,7 @@ void DataFileReaderBase::readHeader()
     if (! readerSchema_.root()) {
         readerSchema_ = dataSchema();
     }
-    minEncodedBytesPerRecord_ = minEncodedBytes(dataSchema_.root(), 0);
+    minEncodedBytesPerRecord_ = MinEncodedBytesWalker()(dataSchema_.root());
 
     it = metadata_.find(AVRO_CODEC_KEY);
     if (it != metadata_.end() && toString(it->second) == AVRO_DEFLATE_CODEC) {

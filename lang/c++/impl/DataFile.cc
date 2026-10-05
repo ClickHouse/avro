@@ -25,6 +25,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <vector>
 
 #include <boost/random/mersenne_twister.hpp>
 #include <boost/iostreams/device/file.hpp>
@@ -71,20 +72,57 @@ boost::iostreams::zlib_params get_zlib_params() {
 /// ClickHouse: a lower bound, in bytes, on what a single value of a schema can encode to.
 /// Memoised by resolved node identity: a schema is a DAG, so one field can inline a type another
 /// names, and an unmemoised walk doubles per level - in `readHeader`, before a caller can object.
+/// The walk keeps its own stack, because named types can chain to any depth.
 /// Zero means no usable bound, whatever the reason; ask `checksDeclaredObjectCount` instead of
 /// reading a zero as one.
 class MinEncodedBytesWalker {
 public:
-    size_t operator()(const NodePtr &node) { return visit(node); }
+    size_t operator()(const NodePtr &root)
+    {
+        size_t result = 0;
+        if (!enter(root, result)) {
+            return result;
+        }
+        while (true) {
+            Frame &top = stack_.back();
+            if (top.next < top.node->leaves()) {
+                const NodePtr leaf = top.node->leafAt(top.next++);
+                size_t value = 0;
+                if (!enter(leaf, value)) {
+                    accumulate(stack_.back(), value);
+                }
+                continue;
+            }
+            /// One byte for a union's branch discriminant, on top of the cheapest branch's own content.
+            result = top.node->type() == AVRO_UNION ? 1 + top.bound : top.bound;
+            const Node *key = top.node.get();
+            stack_.pop_back();
+            on_path_.erase(key);
+            memo_.emplace(key, result);
+            if (stack_.empty()) {
+                return result;
+            }
+            accumulate(stack_.back(), result);
+        }
+    }
 
 private:
+    /// A record or a non-empty union whose leaves are still being visited.
+    struct Frame {
+        NodePtr node;
+        size_t next = 0;
+        size_t bound = 0;
+    };
+
     std::map<const Node *, size_t> memo_;
     /// Nodes still being computed further up: a named type may reference itself. Cutting such a
     /// cycle at zero is what replaces the depth cap, and is safe because every bound here is a
     /// lower one - a cut can only weaken a result, never over-reject, so it is memoised too.
     std::set<const Node *> on_path_;
+    std::vector<Frame> stack_;
 
-    size_t visit(const NodePtr &node_in)
+    /// Pushes a frame for a node whose leaves still have to be visited and returns true, or stores its bound in `value`.
+    bool enter(const NodePtr &node_in, size_t &value)
     {
         NodePtr node = node_in;
         if (node->type() == AVRO_SYMBOLIC) {
@@ -93,56 +131,50 @@ private:
             try {
                 node = resolveSymbol(node);
             } catch (const Exception &) {
-                return 0;
+                value = 0;
+                return false;
             }
         }
         const Node *key = node.get();
         const auto memoised = memo_.find(key);
         if (memoised != memo_.end()) {
-            return memoised->second;
+            value = memoised->second;
+            return false;
         }
-        if (!on_path_.insert(key).second) {
+        if (on_path_.count(key)) {
             /// Closes a cycle. Not memoised: this zero describes the arm that closed it, not the
             /// node, whose own bound is still being computed by the frame that owns it.
-            return 0;
+            value = 0;
+            return false;
         }
-        const size_t result = compute(node);
-        on_path_.erase(key);
-        memo_.emplace(key, result);
-        return result;
+        if ((node->type() == AVRO_RECORD || node->type() == AVRO_UNION) && node->leaves() > 0) {
+            on_path_.insert(key);
+            stack_.push_back(Frame{node});
+            return true;
+        }
+        value = leafBound(*node);
+        memo_.emplace(key, value);
+        return false;
     }
 
-    size_t compute(const NodePtr &node)
+    static void accumulate(Frame &frame, size_t value)
     {
-        switch (node->type()) {
-            case AVRO_NULL:
-                return 0;
+        if (frame.node->type() == AVRO_RECORD) {
+            frame.bound += value;
+        } else {
+            frame.bound = frame.next == 1 ? value : std::min(frame.bound, value);
+        }
+    }
+
+    static size_t leafBound(const Node &node)
+    {
+        switch (node.type()) {
             case AVRO_FLOAT:
                 return 4;
             case AVRO_DOUBLE:
                 return 8;
             case AVRO_FIXED:
-                return static_cast<size_t>(std::max(0, node->fixedSize()));
-            case AVRO_RECORD:
-            {
-                size_t total = 0;
-                for (size_t i = 0; i < node->leaves(); ++i) {
-                    total += visit(node->leafAt(i));
-                }
-                return total;
-            }
-            case AVRO_UNION:
-            {
-                if (node->leaves() == 0) {
-                    return 0;
-                }
-                size_t best = visit(node->leafAt(0));
-                for (size_t i = 1; i < node->leaves(); ++i) {
-                    best = std::min(best, visit(node->leafAt(i)));
-                }
-                /// One byte for the branch discriminant, on top of the cheapest branch's own content.
-                return 1 + best;
-            }
+                return static_cast<size_t>(std::max(0, node.fixedSize()));
             case AVRO_BOOL:
             case AVRO_INT:
             case AVRO_LONG:
@@ -155,6 +187,7 @@ private:
                 /// index, or the zero-length prefix of a string/bytes/array/map.
                 return 1;
             default:
+                /// AVRO_NULL, a record or union without leaves, or a type this cannot reason about.
                 return 0;
         }
     }

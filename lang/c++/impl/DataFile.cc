@@ -38,6 +38,14 @@
 #include <snappy.h>
 #endif
 
+#ifdef BZIP2_CODEC_AVAILABLE
+#include <boost/iostreams/filter/bzip2.hpp>
+#endif
+
+#ifdef XZ_CODEC_AVAILABLE
+#include <boost/iostreams/filter/lzma.hpp>
+#endif
+
 namespace avro {
 using std::unique_ptr;
 using std::ostringstream;
@@ -57,6 +65,14 @@ const string AVRO_ZSTD_CODEC("zstandard");
 
 #ifdef SNAPPY_CODEC_AVAILABLE
 const string AVRO_SNAPPY_CODEC = "snappy";
+#endif
+
+#ifdef BZIP2_CODEC_AVAILABLE
+const string AVRO_BZIP2_CODEC = "bzip2";
+#endif
+
+#ifdef XZ_CODEC_AVAILABLE
+const string AVRO_XZ_CODEC = "xz";
 #endif
 
 const size_t minSyncInterval = 32;
@@ -242,6 +258,14 @@ void DataFileWriterBase::init(const ValidSchema &schema, size_t syncInterval, co
     } else if (codec_ == SNAPPY_CODEC) {
       setMetadata(AVRO_CODEC_KEY, AVRO_SNAPPY_CODEC);
 #endif
+#ifdef BZIP2_CODEC_AVAILABLE
+    } else if (codec_ == BZIP2_CODEC) {
+      setMetadata(AVRO_CODEC_KEY, AVRO_BZIP2_CODEC);
+#endif
+#ifdef XZ_CODEC_AVAILABLE
+    } else if (codec_ == XZ_CODEC) {
+      setMetadata(AVRO_CODEC_KEY, AVRO_XZ_CODEC);
+#endif
     } else {
       throw Exception(boost::format("Unknown codec: %1%") % codec);
     }
@@ -262,6 +286,30 @@ void DataFileWriterBase::close()
 {
     flush();
     stream_.reset();
+}
+
+template <typename Compressor>
+void DataFileWriterBase::writeCompressedBlock(const Compressor & compressor)
+{
+    std::vector<char> buf;
+    {
+        boost::iostreams::filtering_ostream os;
+        os.push(compressor);
+        os.push(boost::iostreams::back_inserter(buf));
+        const uint8_t* data;
+        size_t len;
+
+        std::unique_ptr<InputStream> input = memoryInputStream(*buffer_);
+        while (input->next(&data, &len)) {
+            boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
+        }
+    } // make sure all is flushed
+    std::unique_ptr<InputStream> in = memoryInputStream(
+       reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
+    int64_t byteCount = buf.size();
+    avro::encode(*encoderPtr_, byteCount);
+    encoderPtr_->flush();
+    copy(*in, *stream_);
 }
 
 void DataFileWriterBase::sync()
@@ -286,45 +334,17 @@ void DataFileWriterBase::sync()
         std::unique_ptr<InputStream> in = memoryInputStream(*buffer_);
         copy(*in, *stream_);
     } else if (codec_ == DEFLATE_CODEC) {
-        std::vector<char> buf;
-        {
-            boost::iostreams::filtering_ostream os;
-            os.push(boost::iostreams::zlib_compressor(get_zlib_params()));
-            os.push(boost::iostreams::back_inserter(buf));
-            const uint8_t* data;
-            size_t len;
-
-            std::unique_ptr<InputStream> input = memoryInputStream(*buffer_);
-            while (input->next(&data, &len)) {
-                boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
-            }
-        } // make sure all is flushed
-        std::unique_ptr<InputStream> in = memoryInputStream(
-           reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
-        int64_t byteCount = buf.size();
-        avro::encode(*encoderPtr_, byteCount);
-        encoderPtr_->flush();
-        copy(*in, *stream_);
+        writeCompressedBlock(boost::iostreams::zlib_compressor(get_zlib_params()));
     } else if (codec_ == ZSTD_CODEC) {
-        std::vector<char> buf;
-        {
-            boost::iostreams::filtering_ostream os;
-            os.push(boost::iostreams::zstd_compressor(boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
-            os.push(boost::iostreams::back_inserter(buf));
-            const uint8_t* data;
-            size_t len;
-
-            std::unique_ptr<InputStream> input = memoryInputStream(*buffer_);
-            while (input->next(&data, &len)) {
-                boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
-            }
-        }
-        std::unique_ptr<InputStream> in = memoryInputStream(
-           reinterpret_cast<const uint8_t*>(buf.data()), buf.size());
-        int64_t byteCount = buf.size();
-        avro::encode(*encoderPtr_, byteCount);
-        encoderPtr_->flush();
-        copy(*in, *stream_);
+        writeCompressedBlock(boost::iostreams::zstd_compressor(boost::iostreams::zstd_params(boost::iostreams::zstd::default_compression)));
+#ifdef BZIP2_CODEC_AVAILABLE
+    } else if (codec_ == BZIP2_CODEC) {
+        writeCompressedBlock(boost::iostreams::bzip2_compressor());
+#endif
+#ifdef XZ_CODEC_AVAILABLE
+    } else if (codec_ == XZ_CODEC) {
+        writeCompressedBlock(boost::iostreams::lzma_compressor());
+#endif
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
         std::vector<char> temp;
@@ -558,7 +578,7 @@ bool DataFileReaderBase::checksDeclaredObjectCount() const
 {
     /// Snappy alone: it decompresses eagerly, so the size reaching `checkObjectCountFitsPayload`
     /// is the real decoded one, arrived at after the CRC. Null is passed the header's own declared
-    /// byte count, which a file inflating both fields satisfies; zstd and deflate decode lazily.
+    /// byte count, which a file inflating both fields satisfies; the other codecs decode lazily.
     return minEncodedBytesPerRecord_ > 0 && codec_ == SNAPPY_CODEC;
 }
 
@@ -573,6 +593,25 @@ void DataFileReaderBase::checkObjectCountFitsPayload(uint64_t availableBytes) co
             "Invalid data file. Object count %1% in block header cannot fit in %2% payload byte(s) "
             "for this schema") % objectCount_ % availableBytes);
     }
+}
+
+template <typename Decompressor>
+void DataFileReaderBase::readCompressedBlock(InputStream & st, const Decompressor & decompressor)
+{
+    compressed_.clear();
+    const uint8_t* data;
+    size_t len;
+    while (st.next(&data, &len)) {
+        compressed_.insert(compressed_.end(), data, data + len);
+    }
+    os_.reset(new boost::iostreams::filtering_istream());
+    os_->push(decompressor);
+    os_->push(boost::iostreams::basic_array_source<char>(
+                                                         compressed_.data(), compressed_.size()));
+
+    std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
+    dataDecoder_->init(*in);
+    dataStream_ = std::move(in);
 }
 
 void DataFileReaderBase::readDataBlock()
@@ -614,20 +653,15 @@ void DataFileReaderBase::readDataBlock()
         dataDecoder_->init(*st);
         dataStream_ = std::move(st);
     } else if (codec_ == ZSTD_CODEC) {
-        compressed_.clear();
-        const uint8_t* data;
-        size_t len;
-        while (st->next(&data, &len)) {
-            compressed_.insert(compressed_.end(), data, data + len);
-        }
-        os_.reset(new boost::iostreams::filtering_istream());
-        os_->push(boost::iostreams::zstd_decompressor(boost::iostreams::zstd_params((boost::iostreams::zstd::default_compression))));
-        os_->push(boost::iostreams::basic_array_source<char>(
-                                                             compressed_.data(), compressed_.size()));
-
-        std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
-        dataDecoder_->init(*in);
-        dataStream_ = std::move(in);
+        readCompressedBlock(*st, boost::iostreams::zstd_decompressor(boost::iostreams::zstd_params((boost::iostreams::zstd::default_compression))));
+#ifdef BZIP2_CODEC_AVAILABLE
+    } else if (codec_ == BZIP2_CODEC) {
+        readCompressedBlock(*st, boost::iostreams::bzip2_decompressor());
+#endif
+#ifdef XZ_CODEC_AVAILABLE
+    } else if (codec_ == XZ_CODEC) {
+        readCompressedBlock(*st, boost::iostreams::lzma_decompressor());
+#endif
 #ifdef SNAPPY_CODEC_AVAILABLE
     } else if (codec_ == SNAPPY_CODEC) {
         boost::crc_32_type crc;
@@ -660,7 +694,7 @@ void DataFileReaderBase::readDataBlock()
             throw Exception(boost::format("Checksum did not match for Snappy compression: Expected: %1%, computed: %2%") % checksum % c);
         }
         /// Snappy decompresses eagerly above, so the true decoded size is already known here, unlike
-        /// zstd/deflate below which decode lazily through a filtering stream.
+        /// the other codecs which decode lazily through a filtering stream.
         checkObjectCountFitsPayload(uncompressed.size());
         os_.reset(new boost::iostreams::filtering_istream());
         os_->push(
@@ -672,21 +706,7 @@ void DataFileReaderBase::readDataBlock()
         dataStream_ = std::move(in);
 #endif
     } else {
-        compressed_.clear();
-        const uint8_t* data;
-        size_t len;
-        while (st->next(&data, &len)) {
-            compressed_.insert(compressed_.end(), data, data + len);
-        }
-        // boost::iostreams::write(os, reinterpret_cast<const char*>(data), len);
-        os_.reset(new boost::iostreams::filtering_istream());
-        os_->push(boost::iostreams::zlib_decompressor(get_zlib_params()));
-        os_->push(boost::iostreams::basic_array_source<char>(
-                                                             compressed_.data(), compressed_.size()));
-
-        std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
-        dataDecoder_->init(*in);
-        dataStream_ = std::move(in);
+        readCompressedBlock(*st, boost::iostreams::zlib_decompressor(get_zlib_params()));
     }
 }
 
@@ -740,6 +760,14 @@ void DataFileReaderBase::readHeader()
     } else if (it != metadata_.end()
             && toString(it->second) == AVRO_SNAPPY_CODEC) {
         codec_ = SNAPPY_CODEC;
+#endif
+#ifdef BZIP2_CODEC_AVAILABLE
+    } else if (it != metadata_.end() && toString(it->second) == AVRO_BZIP2_CODEC) {
+        codec_ = BZIP2_CODEC;
+#endif
+#ifdef XZ_CODEC_AVAILABLE
+    } else if (it != metadata_.end() && toString(it->second) == AVRO_XZ_CODEC) {
+        codec_ = XZ_CODEC;
 #endif
     } else {
         codec_ = NULL_CODEC;

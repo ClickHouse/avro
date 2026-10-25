@@ -43,7 +43,15 @@ enum Codec {
   ZSTD_CODEC,
 
 #ifdef SNAPPY_CODEC_AVAILABLE
-  SNAPPY_CODEC
+  SNAPPY_CODEC,
+#endif
+
+#ifdef BZIP2_CODEC_AVAILABLE
+  BZIP2_CODEC,
+#endif
+
+#ifdef XZ_CODEC_AVAILABLE
+  XZ_CODEC,
 #endif
 
 };
@@ -90,6 +98,9 @@ class AVRO_DECL DataFileWriterBase : boost::noncopyable {
     void init(const ValidSchema &schema, size_t syncInterval, const Codec &codec);
 
     void writeHeader();
+
+    template <typename Compressor>
+    void writeCompressedBlock(const Compressor & compressor);
 public:
     void setMetadata(const std::string& key, const std::string& value);
 
@@ -220,6 +231,10 @@ class AVRO_DECL DataFileReaderBase : boost::noncopyable {
     void readHeader();
 
     void readDataBlock();
+
+    template <typename Decompressor>
+    void readCompressedBlock(InputStream & st, const Decompressor & decompressor);
+
     void doSeek(int64_t position);
 public:
     /**

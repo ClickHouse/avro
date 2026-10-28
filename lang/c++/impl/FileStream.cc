@@ -122,8 +122,21 @@ struct IStreamBufferCopyIn : public BufferCopyIn {
         }
     }
 
+    /// ClickHouse: a stream with `badbit` in its exception mask, such as the decompressing stream of a
+    /// compressed block, rethrows the error of its buffer, e.g. `boost::iostreams::zlib_error`. Report
+    /// it as an `avro::Exception`, like every other error of reading malformed data.
+    void readStream(char* b, size_t toRead) {
+        try {
+            is_.read(b, toRead);
+        } catch (const Exception &) {
+            throw;
+        } catch (const std::exception & e) {
+            throw Exception(std::string("Cannot read stream: ") + e.what());
+        }
+    }
+
     bool read(uint8_t* b, size_t toRead, size_t& actual) {
-        is_.read(reinterpret_cast<char*>(b), toRead);
+        readStream(reinterpret_cast<char*>(b), toRead);
         if (is_.bad()) {
             return false;
         }
@@ -141,7 +154,7 @@ struct NonSeekableIStreamBufferCopyIn : public IStreamBufferCopyIn {
         uint8_t buf[bufSize];
         while (len > 0) {
             size_t n = std::min(len, bufSize);
-            is_.read(reinterpret_cast<char*>(buf), n);
+            readStream(reinterpret_cast<char*>(buf), n);
             if (is_.bad()) {
                 throw Exception("Cannot skip stream");
             }

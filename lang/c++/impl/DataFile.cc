@@ -608,6 +608,11 @@ void DataFileReaderBase::readCompressedBlock(InputStream & st, const Decompresso
     os_->push(decompressor);
     os_->push(boost::iostreams::basic_array_source<char>(
                                                          compressed_.data(), compressed_.size()));
+    /// ClickHouse: by default a decompressor exception only sets `badbit`, which the input stream
+    /// treats as the end of data, so a truncated or corrupted block could be read successfully.
+    /// The mask is set after the chain is built: the stream is in the `badbit` state while its chain
+    /// is empty, and setting the mask then would throw immediately.
+    os_->exceptions(std::ios::badbit);
 
     std::unique_ptr<InputStream> in = nonSeekableIstreamInputStream(*os_);
     dataDecoder_->init(*in);

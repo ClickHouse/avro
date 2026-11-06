@@ -119,12 +119,11 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             vector<GenericDatum>& r = v.value();
             const NodePtr& nn = v.schema()->leafAt(0);
             r.resize(0);
-            size_t start = 0;
             for (size_t m = d.arrayStart(); m != 0; m = d.arrayNext()) {
-                r.resize(r.size() + m);
-                for (; start < r.size(); ++start) {
-                    r[start] = GenericDatum(nn);
-                    read(r[start], d, isResolving, depth + 1);
+                // Grow with the decoded items, not with the block count, which comes from the file.
+                for (size_t i = 0; i < m; ++i) {
+                    r.emplace_back(nn);
+                    read(r.back(), d, isResolving, depth + 1);
                 }
             }
         }
@@ -135,13 +134,13 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             GenericMap::Value& r = v.value();
             const NodePtr& nn = v.schema()->leafAt(1);
             r.resize(0);
-            size_t start = 0;
             for (size_t m = d.mapStart(); m != 0; m = d.mapNext()) {
-                r.resize(r.size() + m);
-                for (; start < r.size(); ++start) {
-                    d.decodeString(r[start].first);
-                    r[start].second = GenericDatum(nn);
-                    read(r[start].second, d, isResolving, depth + 1);
+                // Grow with the decoded items, not with the block count, which comes from the file.
+                for (size_t i = 0; i < m; ++i) {
+                    r.emplace_back();
+                    d.decodeString(r.back().first);
+                    r.back().second = GenericDatum(nn);
+                    read(r.back().second, d, isResolving, depth + 1);
                 }
             }
         }

@@ -31,8 +31,9 @@ typedef vector<uint8_t> bytes;
 
 namespace {
 
-/// Items that take no bytes are not bounded by the input, so the count a container may declare is capped instead.
-constexpr size_t maxZeroSizeItems = size_t(1) << 24;
+/// Items that take no bytes are not bounded by the input, so the number of them a single top-level datum may declare
+/// is capped instead. 65536 items of 32 bytes (`GenericDatum`) are 2 MiB; empty records add a `GenericRecord` each.
+constexpr size_t maxZeroSizeItems = size_t(1) << 16;
 
 /// Whether a value of this schema can be encoded in zero bytes.
 /// When resolving, the writer may encode in zero bytes what the reader expects to be larger
@@ -65,10 +66,11 @@ bool mayTakeNoBytes(const NodePtr& node, bool isResolving, size_t depth) {
     }
 }
 
-void checkZeroSizeItemCount(size_t existing, size_t block) {
-    if (block > maxZeroSizeItems - std::min(existing, maxZeroSizeItems)) {
-        throw Exception(boost::format("Array of items that take no bytes exceeds the limit of %1% items") % maxZeroSizeItems);
+void checkZeroSizeItemCount(size_t& zeroSizeItems, size_t block) {
+    if (block > maxZeroSizeItems - zeroSizeItems) {
+        throw Exception(boost::format("Arrays of items that take no bytes exceed the limit of %1% items") % maxZeroSizeItems);
     }
+    zeroSizeItems += block;
 }
 
 }   // namespace
@@ -97,10 +99,11 @@ GenericReader::GenericReader(const ValidSchema& writerSchema,
 void GenericReader::read(GenericDatum& datum) const
 {
     datum = GenericDatum(schema_.root());
-    read(datum, *decoder_, isResolving_, 0);
+    size_t zeroSizeItems = 0;
+    read(datum, *decoder_, isResolving_, 0, zeroSizeItems);
 }
 
-void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth)
+void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth, size_t& zeroSizeItems)
 {
     if (depth >= GenericDatum::maxNestingDepth) {
         throw Exception(boost::format("Cannot read a datum nested deeper than %1% levels") % GenericDatum::maxNestingDepth);
@@ -147,11 +150,11 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
                 std::vector<size_t> fo =
                     static_cast<ResolvingDecoder&>(d).fieldOrder();
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(fo[i]), d, isResolving, depth + 1);
+                    read(r.fieldAt(fo[i]), d, isResolving, depth + 1, zeroSizeItems);
                 }
             } else {
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(i), d, isResolving, depth + 1);
+                    read(r.fieldAt(i), d, isResolving, depth + 1, zeroSizeItems);
                 }
             }
         }
@@ -164,16 +167,16 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             GenericArray& v = datum.value<GenericArray>();
             vector<GenericDatum>& r = v.value();
             const NodePtr& nn = v.schema()->leafAt(0);
-            const bool zeroSizeItems = mayTakeNoBytes(nn, isResolving, 0);
+            const bool itemsTakeNoBytes = mayTakeNoBytes(nn, isResolving, 0);
             r.resize(0);
             for (size_t m = d.arrayStart(); m != 0; m = d.arrayNext()) {
-                if (zeroSizeItems) {
-                    checkZeroSizeItemCount(r.size(), m);
+                if (itemsTakeNoBytes) {
+                    checkZeroSizeItemCount(zeroSizeItems, m);
                 }
                 // Grow with the decoded items, not with the block count, which comes from the file.
                 for (size_t i = 0; i < m; ++i) {
                     r.emplace_back(nn);
-                    read(r.back(), d, isResolving, depth + 1);
+                    read(r.back(), d, isResolving, depth + 1, zeroSizeItems);
                 }
             }
         }
@@ -190,7 +193,7 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
                     r.emplace_back();
                     d.decodeString(r.back().first);
                     r.back().second = GenericDatum(nn);
-                    read(r.back().second, d, isResolving, depth + 1);
+                    read(r.back().second, d, isResolving, depth + 1, zeroSizeItems);
                 }
             }
         }
@@ -209,7 +212,8 @@ void GenericReader::read(Decoder& d, GenericDatum& g, const ValidSchema& s)
 
 void GenericReader::read(Decoder& d, GenericDatum& g)
 {
-    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0, 0);
+    size_t zeroSizeItems = 0;
+    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0, 0, zeroSizeItems);
 }
 
 GenericWriter::GenericWriter(const ValidSchema& s, const EncoderPtr& encoder) :

@@ -17,6 +17,8 @@
  */
 
 #include "Generic.hh"
+#include "NodeImpl.hh"
+#include <algorithm>
 #include <sstream>
 
 namespace avro {
@@ -26,6 +28,50 @@ using std::vector;
 using std::ostringstream;
 
 typedef vector<uint8_t> bytes;
+
+namespace {
+
+/// Items that take no bytes are not bounded by the input, so the count a container may declare is capped instead.
+constexpr size_t maxZeroSizeItems = size_t(1) << 24;
+
+/// Whether a value of this schema can be encoded in zero bytes.
+/// When resolving, the writer may encode in zero bytes what the reader expects to be larger
+/// (a `null` read as a union, or a record whose fields all have defaults), so such readers are assumed to.
+bool mayTakeNoBytes(const NodePtr& node, bool isResolving, size_t depth) {
+    if (depth >= GenericDatum::maxNestingDepth) {
+        return true;
+    }
+    switch (node->type()) {
+    case AVRO_NULL:
+        return true;
+    case AVRO_FIXED:
+        return node->fixedSize() == 0;
+    case AVRO_UNION:
+        return isResolving;
+    case AVRO_RECORD:
+        if (isResolving) {
+            return true;
+        }
+        for (size_t i = 0; i < node->leaves(); ++i) {
+            if (!mayTakeNoBytes(node->leafAt(i), isResolving, depth + 1)) {
+                return false;
+            }
+        }
+        return true;
+    case AVRO_SYMBOLIC:
+        return mayTakeNoBytes(resolveSymbol(node), isResolving, depth + 1);
+    default:
+        return false;
+    }
+}
+
+void checkZeroSizeItemCount(size_t existing, size_t block) {
+    if (block > maxZeroSizeItems - std::min(existing, maxZeroSizeItems)) {
+        throw Exception(boost::format("Array of items that take no bytes exceeds the limit of %1% items") % maxZeroSizeItems);
+    }
+}
+
+}   // namespace
 
 void GenericContainer::assertType(const NodePtr& schema, Type type) {
     if (schema->type() != type) {
@@ -118,8 +164,12 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             GenericArray& v = datum.value<GenericArray>();
             vector<GenericDatum>& r = v.value();
             const NodePtr& nn = v.schema()->leafAt(0);
+            const bool zeroSizeItems = mayTakeNoBytes(nn, isResolving, 0);
             r.resize(0);
             for (size_t m = d.arrayStart(); m != 0; m = d.arrayNext()) {
+                if (zeroSizeItems) {
+                    checkZeroSizeItemCount(r.size(), m);
+                }
                 // Grow with the decoded items, not with the block count, which comes from the file.
                 for (size_t i = 0; i < m; ++i) {
                     r.emplace_back(nn);

@@ -56,16 +56,26 @@ size_t datumNodeCount(const NodePtr& node, size_t depth = 0) {
         }
         return count;
     }
-    case AVRO_UNION: {
-        size_t largest = 0;
-        for (size_t i = 0; i < node->leaves() && largest < saturated; ++i) {
-            largest = std::max(largest, datumNodeCount(node->leafAt(i), depth + 1));
-        }
-        return std::min(saturated, 1 + largest);
-    }
+    case AVRO_UNION:
+        // `GenericUnion` constructs only its first branch; others are built by `selectBranch` while reading.
+        return std::min(saturated, 1 + (node->leaves() > 0 ? datumNodeCount(node->leafAt(0), depth + 1) : 0));
     default:
         return 1;
     }
+}
+
+/// The number of `GenericDatum` objects in a datum that was just read, excluding the elements of arrays and maps,
+/// which charge themselves. Unlike `datumNodeCount`, it accounts for the branches that reading selected.
+size_t materializedDatumCount(const GenericDatum& datum) {
+    // A union is a datum wrapping the datum of its selected branch.
+    size_t count = datum.isUnion() ? 2 : 1;
+    if (datum.type() == AVRO_RECORD) {
+        const GenericRecord& record = datum.value<GenericRecord>();
+        for (size_t i = 0; i < record.fieldCount() && count <= maxZeroByteDatumNodes; ++i) {
+            count += materializedDatumCount(record.fieldAt(i));
+        }
+    }
+    return count;
 }
 
 /// Charges `count` datums that were created without consuming any input.
@@ -184,7 +194,7 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
                     // An item that consumed input is bounded by the size of the input. One that did not (a `null`,
                     // an empty record, or a record made of defaults) is bounded only by the datums it creates.
                     if (d.inputPosition() == positionBefore) {
-                        chargeZeroByteDatumNodes(zeroByteDatumNodes, itemNodes);
+                        chargeZeroByteDatumNodes(zeroByteDatumNodes, materializedDatumCount(r.back()));
                     }
                 }
             }

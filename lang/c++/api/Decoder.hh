@@ -169,6 +169,10 @@ public:
     /// by the avro decoder. Similar set of problems occur if the Decoder
     /// consumes more than what it should.
     virtual void drain() = 0;
+
+    /// The number of bytes of the input stream this decoder has consumed so far (bytes it has buffered but not yet
+    /// decoded are not counted). It only grows, and it is not comparable between decoders over different streams.
+    virtual uint64_t inputPosition() const = 0;
 };
 
 /**

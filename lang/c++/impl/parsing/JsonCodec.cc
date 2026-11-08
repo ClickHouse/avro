@@ -211,6 +211,7 @@ class JsonDecoder : public Decoder {
     void expect(JsonParser::Token tk);
     void skipComposite();
     void drain();
+    uint64_t inputPosition() const { return in_.position(); }
 public:
 
     JsonDecoder(const ValidSchema& s) :

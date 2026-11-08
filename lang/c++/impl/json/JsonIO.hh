@@ -99,6 +99,11 @@ public:
         in_.reset(is);
     }
 
+    /// Number of bytes of the input stream consumed so far, including the token that was peeked.
+    uint64_t position() const {
+        return in_.position();
+    }
+
     Token advance() {
         if (! peeked) {
             curToken = doAdvance();

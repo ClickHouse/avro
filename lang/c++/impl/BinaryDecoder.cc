@@ -81,6 +81,7 @@ class BinaryDecoder : public Decoder {
     size_t doDecodeItemCount();
     size_t doDecodeLength();
     void drain();
+    uint64_t inputPosition() const { return in_.position(); }
     void more();
 };
 

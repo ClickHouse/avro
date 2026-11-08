@@ -478,6 +478,12 @@ class ResolvingDecoderHandler {
             backup_.reset();
         }
     }
+
+    /// The position in the input of the decoder that reads the actual stream, not the one over the default values.
+    uint64_t inputPosition() const
+    {
+        return (backup_ != NULL ? backup_ : base_)->inputPosition();
+    }
 };
 
 template <typename Parser>
@@ -513,6 +519,7 @@ class ResolvingDecoderImpl : public ResolvingDecoder
         parser_.processImplicitActions();
         base_->drain();
     }
+    uint64_t inputPosition() const { return handler_.inputPosition(); }
 public:
     ResolvingDecoderImpl(const ValidSchema& writer, const ValidSchema& reader,
         const DecoderPtr& base) :

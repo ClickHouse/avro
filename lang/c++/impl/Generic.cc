@@ -31,8 +31,10 @@ typedef vector<uint8_t> bytes;
 
 namespace {
 
-/// Items that consume no input bytes are not bounded by the size of the input, so the number of `GenericDatum` objects
-/// that they may materialize is capped per top-level datum instead. 65536 datums of 32 bytes are 2 MiB.
+/// The reader may create this many `GenericDatum` objects (or the equivalent in bytes of variable-size values) from a
+/// stretch of the input that does not advance, which is 2 MiB of 32-byte datums. Items that consume no bytes (`null`,
+/// an empty record, a record made of defaults, defaults of any shape) are not bounded by the size of the input, so
+/// this budget is the only thing that bounds them.
 constexpr size_t maxZeroByteDatumNodes = size_t(1) << 16;
 
 /// The number of `GenericDatum` objects that `GenericDatum(node)` constructs eagerly, including itself: a record
@@ -64,8 +66,9 @@ size_t datumNodeCount(const NodePtr& node, size_t depth = 0) {
     }
 }
 
-/// The number of `GenericDatum` objects in a datum that was just read, excluding the elements of arrays and maps,
-/// which charge themselves. Unlike `datumNodeCount`, it accounts for the branches that reading selected.
+/// The number of `GenericDatum` objects in a datum that was just constructed or read, excluding the elements of arrays
+/// and maps, which are charged as they are appended. Unlike `datumNodeCount`, it accounts for the branches that reading
+/// selected.
 size_t materializedDatumCount(const GenericDatum& datum) {
     // A union is a datum wrapping the datum of its selected branch.
     size_t count = datum.isUnion() ? 2 : 1;
@@ -78,15 +81,44 @@ size_t materializedDatumCount(const GenericDatum& datum) {
     return count;
 }
 
-/// Charges `count` datums that were created without consuming any input.
-void chargeZeroByteDatumNodes(size_t& zeroByteDatumNodes, size_t count) {
-    if (count > maxZeroByteDatumNodes - zeroByteDatumNodes) {
-        throw Exception(boost::format("Items that take no bytes exceed the limit of %1% datums") % maxZeroByteDatumNodes);
-    }
-    zeroByteDatumNodes += count;
+/// The number of datums that a string, bytes or key of `bytes` bytes is charged as.
+size_t datumsOfBytes(size_t bytes) {
+    return (bytes + sizeof(GenericDatum) - 1) / sizeof(GenericDatum);
 }
 
 }   // namespace
+
+/// Every array item, map entry, selected union branch and string that reading creates is charged to the budget, and the
+/// budget refills whenever the input advances, because what follows is backed by the input again. What a stretch of the
+/// input that does not advance can create (the items of a `null` array, a default of any shape, an empty record that is
+/// given defaults) is therefore bounded by `maxZeroByteDatumNodes`, however the arrays, maps and records that create it
+/// are nested, while a valid input is not rejected for the number of items that it backs.
+struct GenericReader::ZeroByteBudget {
+    uint64_t position;
+    size_t datums = 0;
+
+    explicit ZeroByteBudget(const Decoder& d) : position(d.inputPosition()) {}
+
+    /// Charges `count` datums that are created from the current position of the input.
+    void charge(const Decoder& d, size_t count) {
+        const uint64_t now = d.inputPosition();
+        if (now != position) {
+            position = now;
+            datums = 0;
+        }
+        if (count > maxZeroByteDatumNodes - datums) {
+            throw Exception(boost::format("Values that take no bytes exceed the limit of %1% datums") % maxZeroByteDatumNodes);
+        }
+        datums += count;
+    }
+
+    /// Charges a string, bytes or key of `bytes` bytes that was decoded from `before`, unless decoding consumed input.
+    void chargeBytes(const Decoder& d, uint64_t before, size_t bytes) {
+        if (d.inputPosition() == before) {
+            charge(d, datumsOfBytes(bytes));
+        }
+    }
+};
 
 void GenericContainer::assertType(const NodePtr& schema, Type type) {
     if (schema->type() != type) {
@@ -112,17 +144,22 @@ GenericReader::GenericReader(const ValidSchema& writerSchema,
 void GenericReader::read(GenericDatum& datum) const
 {
     datum = GenericDatum(schema_.root());
-    size_t zeroByteDatumNodes = 0;
-    read(datum, *decoder_, isResolving_, 0, zeroByteDatumNodes);
+    ZeroByteBudget budget(*decoder_);
+    read(datum, *decoder_, isResolving_, 0, budget);
 }
 
-void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth, size_t& zeroByteDatumNodes)
+void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth, ZeroByteBudget& budget)
 {
     if (depth >= GenericDatum::maxNestingDepth) {
         throw Exception(boost::format("Cannot read a datum nested deeper than %1% levels") % GenericDatum::maxNestingDepth);
     }
     if (datum.isUnion()) {
-        datum.selectBranch(d.decodeUnionIndex());
+        const size_t branch = d.decodeUnionIndex();
+        if (branch != datum.unionBranch()) {
+            // Selecting another branch constructs its datum, which replaces the one of the previous branch.
+            datum.selectBranch(branch);
+            budget.charge(d, materializedDatumCount(datum) - 1);
+        }
     }
     switch (datum.type()) {
     case AVRO_NULL:
@@ -144,10 +181,20 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
         datum.value<double>() = d.decodeDouble();
         break;
     case AVRO_STRING:
-        d.decodeString(datum.value<string>());
+        {
+            const uint64_t positionBefore = d.inputPosition();
+            std::string& s = datum.value<string>();
+            d.decodeString(s);
+            budget.chargeBytes(d, positionBefore, s.size());
+        }
         break;
     case AVRO_BYTES:
-        d.decodeBytes(datum.value<bytes>());
+        {
+            const uint64_t positionBefore = d.inputPosition();
+            bytes& b = datum.value<bytes>();
+            d.decodeBytes(b);
+            budget.chargeBytes(d, positionBefore, b.size());
+        }
         break;
     case AVRO_FIXED:
         {
@@ -163,11 +210,11 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
                 std::vector<size_t> fo =
                     static_cast<ResolvingDecoder&>(d).fieldOrder();
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(fo[i]), d, isResolving, depth + 1, zeroByteDatumNodes);
+                    read(r.fieldAt(fo[i]), d, isResolving, depth + 1, budget);
                 }
             } else {
                 for (size_t i = 0; i < c; ++i) {
-                    read(r.fieldAt(i), d, isResolving, depth + 1, zeroByteDatumNodes);
+                    read(r.fieldAt(i), d, isResolving, depth + 1, budget);
                 }
             }
         }
@@ -185,17 +232,9 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             for (size_t m = d.arrayStart(); m != 0; m = d.arrayNext()) {
                 // Grow with the decoded items, not with the block count, which comes from the file.
                 for (size_t i = 0; i < m; ++i) {
-                    if (itemNodes > maxZeroByteDatumNodes) {
-                        throw Exception(boost::format("An array item would create more than %1% datums") % maxZeroByteDatumNodes);
-                    }
-                    const uint64_t positionBefore = d.inputPosition();
+                    budget.charge(d, itemNodes);
                     r.emplace_back(nn);
-                    read(r.back(), d, isResolving, depth + 1, zeroByteDatumNodes);
-                    // An item that consumed input is bounded by the size of the input. One that did not (a `null`,
-                    // an empty record, or a record made of defaults) is bounded only by the datums it creates.
-                    if (d.inputPosition() == positionBefore) {
-                        chargeZeroByteDatumNodes(zeroByteDatumNodes, materializedDatumCount(r.back()));
-                    }
+                    read(r.back(), d, isResolving, depth + 1, budget);
                 }
             }
         }
@@ -205,14 +244,19 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
             GenericMap& v = datum.value<GenericMap>();
             GenericMap::Value& r = v.value();
             const NodePtr& nn = v.schema()->leafAt(1);
+            // An entry is its key and the datums of its value.
+            const size_t entryNodes = 1 + datumNodeCount(nn);
             r.resize(0);
             for (size_t m = d.mapStart(); m != 0; m = d.mapNext()) {
                 // Grow with the decoded items, not with the block count, which comes from the file.
                 for (size_t i = 0; i < m; ++i) {
+                    budget.charge(d, entryNodes);
                     r.emplace_back();
+                    const uint64_t positionBefore = d.inputPosition();
                     d.decodeString(r.back().first);
+                    budget.chargeBytes(d, positionBefore, r.back().first.size());
                     r.back().second = GenericDatum(nn);
-                    read(r.back().second, d, isResolving, depth + 1, zeroByteDatumNodes);
+                    read(r.back().second, d, isResolving, depth + 1, budget);
                 }
             }
         }
@@ -231,8 +275,8 @@ void GenericReader::read(Decoder& d, GenericDatum& g, const ValidSchema& s)
 
 void GenericReader::read(Decoder& d, GenericDatum& g)
 {
-    size_t zeroByteDatumNodes = 0;
-    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0, 0, zeroByteDatumNodes);
+    ZeroByteBudget budget(d);
+    read(g, d, dynamic_cast<ResolvingDecoder*>(&d) != 0, 0, budget);
 }
 
 GenericWriter::GenericWriter(const ValidSchema& s, const EncoderPtr& encoder) :

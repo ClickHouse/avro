@@ -68,6 +68,7 @@ private:
     bool hasNext;
     char nextChar;
     bool peeked;
+    uint64_t peekedAt;
 
     StreamReader in_;
     Token curToken;
@@ -87,7 +88,7 @@ private:
     static std::string decodeString(const std::string& s, bool binary);
 
 public:
-    JsonParser() : curState(stValue), hasNext(false), peeked(false), line_(1) { }
+    JsonParser() : curState(stValue), hasNext(false), peeked(false), peekedAt(0), line_(1) { }
 
     void init(InputStream& is) {
         // Clear by swapping with an empty stack
@@ -99,9 +100,10 @@ public:
         in_.reset(is);
     }
 
-    /// Number of bytes of the input stream consumed so far, including the token that was peeked.
+    /// Number of bytes of the input stream that the tokens returned by `advance` account for. The token that was peeked
+    /// but not yet consumed, and the character read after a number or literal to find its end, are not counted.
     uint64_t position() const {
-        return in_.position();
+        return peeked ? peekedAt : in_.position() - (hasNext ? 1 : 0);
     }
 
     Token advance() {
@@ -115,6 +117,7 @@ public:
 
     Token peek() {
         if (! peeked) {
+            peekedAt = position();
             curToken = doAdvance();
             peeked = true;
         }

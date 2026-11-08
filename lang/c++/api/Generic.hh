@@ -36,7 +36,10 @@ class AVRO_DECL GenericReader : boost::noncopyable {
     const bool isResolving_;
     const DecoderPtr decoder_;
 
-    static void read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth, size_t& zeroByteDatumNodes);
+    /// Bounds what reading creates from a stretch of the input that does not advance (ClickHouse).
+    struct ZeroByteBudget;
+
+    static void read(GenericDatum& datum, Decoder& d, bool isResolving, size_t depth, ZeroByteBudget& budget);
 public:
     /**
      * Constructs a reader for the given schema using the given decoder.

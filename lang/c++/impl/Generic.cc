@@ -38,8 +38,9 @@ namespace {
 constexpr size_t maxZeroByteDatumNodes = size_t(1) << 16;
 
 /// The number of `GenericDatum` objects that `GenericDatum(node)` constructs eagerly, including itself: a record
-/// constructs one datum per field recursively, a union constructs the datum of its selected branch (the largest
-/// branch is counted, because reading may select any of them). The result saturates at `maxZeroByteDatumNodes + 1`.
+/// constructs one datum per field recursively, a union constructs the datum of its first branch only. It is computed
+/// from the schema, so that it can be charged before anything is constructed. The result saturates at
+/// `maxZeroByteDatumNodes + 1`.
 size_t datumNodeCount(const NodePtr& node, size_t depth = 0) {
     constexpr size_t saturated = maxZeroByteDatumNodes + 1;
     if (depth >= GenericDatum::maxNestingDepth) {
@@ -64,21 +65,6 @@ size_t datumNodeCount(const NodePtr& node, size_t depth = 0) {
     default:
         return 1;
     }
-}
-
-/// The number of `GenericDatum` objects in a datum that was just constructed or read, excluding the elements of arrays
-/// and maps, which are charged as they are appended. Unlike `datumNodeCount`, it accounts for the branches that reading
-/// selected.
-size_t materializedDatumCount(const GenericDatum& datum) {
-    // A union is a datum wrapping the datum of its selected branch.
-    size_t count = datum.isUnion() ? 2 : 1;
-    if (datum.type() == AVRO_RECORD) {
-        const GenericRecord& record = datum.value<GenericRecord>();
-        for (size_t i = 0; i < record.fieldCount() && count <= maxZeroByteDatumNodes; ++i) {
-            count += materializedDatumCount(record.fieldAt(i));
-        }
-    }
-    return count;
 }
 
 /// The number of datums that a string, bytes or key of `bytes` bytes is charged as.
@@ -156,9 +142,11 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
     if (datum.isUnion()) {
         const size_t branch = d.decodeUnionIndex();
         if (branch != datum.unionBranch()) {
-            // Selecting another branch constructs its datum, which replaces the one of the previous branch.
+            // Selecting another branch constructs its datum, which replaces the one of the previous branch. The datum
+            // of a branch such as a record of many fields is far larger than the input that selects it, so it is
+            // charged before it is constructed.
+            budget.charge(d, datumNodeCount(datum.branchSchema(branch)));
             datum.selectBranch(branch);
-            budget.charge(d, materializedDatumCount(datum) - 1);
         }
     }
     switch (datum.type()) {

@@ -124,6 +124,14 @@ public:
     size_t unionBranch() const;
 
     /**
+     * Returns the schema of the branch \p branch of this union, without constructing the datum of the branch,
+     * which \c selectBranch does and which can be much larger than the datum that is replaced (a record of many fields).
+     * Throws if \p branch is not a branch of the union.
+     * \sa isUnion().
+     */
+    const NodePtr& branchSchema(size_t branch) const;
+
+    /**
      * Selects a new branch in the union if this is a union.
      * \sa isUnion().
      */
@@ -566,6 +574,19 @@ inline size_t GenericDatum::unionBranch() const {
 #else
     return boost::any_cast<GenericUnion>(&value_)->currentBranch();
 #endif
+}
+
+inline const NodePtr& GenericDatum::branchSchema(size_t branch) const {
+#if __cplusplus >= 201703L
+    const NodePtr& unionSchema = std::any_cast<GenericUnion>(&value_)->schema();
+#else
+    const NodePtr& unionSchema = boost::any_cast<GenericUnion>(&value_)->schema();
+#endif
+    if (branch >= unionSchema->leaves()) {
+        throw Exception(boost::format("Union branch %1% is out of range of the %2% branches of the union") %
+            branch % unionSchema->leaves());
+    }
+    return unionSchema->leafAt(static_cast<int>(branch));
 }
 
 inline void GenericDatum::selectBranch(size_t branch) {

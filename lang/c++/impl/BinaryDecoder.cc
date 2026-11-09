@@ -180,10 +180,7 @@ void BinaryDecoder::skipBytes()
 
 void BinaryDecoder::decodeFixed(size_t n, std::vector<uint8_t>& value)
 {
-    value.resize(n);
-    if (n > 0) {
-        in_.readBytes(value.data(), n);
-    }
+    readSizedInto(in_, value, n);
 }
 
 void BinaryDecoder::skipFixed(size_t n)

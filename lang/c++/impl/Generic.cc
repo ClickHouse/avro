@@ -186,8 +186,10 @@ void GenericReader::read(GenericDatum& datum, Decoder& d, bool isResolving, size
         break;
     case AVRO_FIXED:
         {
+            const uint64_t positionBefore = d.inputPosition();
             GenericFixed& f = datum.value<GenericFixed>();
             d.decodeFixed(f.schema()->fixedSize(), f.value());
+            budget.chargeBytes(d, positionBefore, f.value().size());
         }
         break;
     case AVRO_RECORD:
@@ -308,7 +310,13 @@ void GenericWriter::write(const GenericDatum& datum, Encoder& e)
         e.encodeBytes(datum.value<bytes>());
         break;
     case AVRO_FIXED:
-        e.encodeFixed(datum.value<GenericFixed>().value());
+        {
+            const GenericFixed& f = datum.value<GenericFixed>();
+            if (f.value().size() != f.schema()->fixedSize()) {
+                throw Exception("Value of fixed has a size that differs from the size of its schema");
+            }
+            e.encodeFixed(f.value());
+        }
         break;
     case AVRO_RECORD:
         {

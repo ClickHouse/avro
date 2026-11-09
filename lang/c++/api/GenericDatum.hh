@@ -507,12 +507,13 @@ class AVRO_DECL GenericFixed : public GenericContainer {
     std::vector<uint8_t> value_;
 public:
     /**
-     * Constructs a generic enum corresponding to the given schema \p schema,
-     * which should be of Avro type fixed.
+     * Constructs a generic fixed corresponding to the given schema \p schema,
+     * which should be of Avro type fixed. The contents are left empty: the size
+     * declared by a schema read from untrusted input is not allocated here, but
+     * by the decoder as the bytes are read. A value written by the caller must
+     * be set to the size of the schema.
      */
-    GenericFixed(const NodePtr& schema) : GenericContainer(AVRO_FIXED, schema) {
-        value_.resize(schema->fixedSize());
-    }
+    GenericFixed(const NodePtr& schema) : GenericContainer(AVRO_FIXED, schema) { }
 
     GenericFixed(const NodePtr& schema, const std::vector<uint8_t>& v) :
         GenericContainer(AVRO_FIXED, schema), value_(v) { }

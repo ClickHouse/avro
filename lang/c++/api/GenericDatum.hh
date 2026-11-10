@@ -36,6 +36,21 @@
 
 namespace avro {
 
+class GenericReader;
+
+/**
+ * ClickHouse: the tag of the construction of the datum of a value that is read from untrusted input. A datum that is
+ * constructed with it is shallow: a record has none of its fields, an array and a map are empty, and a union has the
+ * shallow datum of its first branch, so what it costs does not depend on the datums that the schema describes below it
+ * (which is exponential in the size of a schema whose records refer to a named record several times). \c GenericReader
+ * constructs the rest as the input backs it, and bounds what it constructs from input that does not advance.
+ *
+ * A shallow datum is for \c GenericReader and \c DataFileReader: until it is read, a record of it has no fields. The
+ * construction without the tag, which every other user of a \c GenericDatum keeps, constructs all of the datums of the
+ * schema, as it always did, and is not bounded.
+ */
+struct ShallowTag { };
+
 /**
  * Generic datum which can hold any Avro type. The datum has a type
  * and a value. The type is one of the Avro data types. The C++ type for
@@ -78,7 +93,7 @@ protected:
     GenericDatum(Type t, LogicalType logicalType, const T& v)
         : type_(t), logicalType_(logicalType), value_(v) { }
 
-    void init(const NodePtr& schema);
+    void init(const NodePtr& schema, bool shallow = false);
 public:
     /// ClickHouse: a named type may reference itself, so building or reading a datum throws beyond this nesting depth
     /// instead of recursing until the stack overflows.
@@ -136,6 +151,12 @@ public:
      * \sa isUnion().
      */
     void selectBranch(size_t branch);
+
+    /**
+     * Selects a new branch in the union if this is a union, and constructs the datum of the branch shallow.
+     * \sa ShallowTag.
+     */
+    void selectBranch(size_t branch, ShallowTag);
 
     /// Makes a new AVRO_NULL datum.
     GenericDatum() : type_(AVRO_NULL), logicalType_(LogicalType::NONE) { }
@@ -195,12 +216,40 @@ public:
     }
 
     /**
+     * Constructs a shallow datum (see \c ShallowTag) corresponding to the given avro type and sets the value, which
+     * for a record or a union is the one that the caller built shallow.
+     */
+    template<typename T>
+    GenericDatum(const NodePtr& schema, const T& v, ShallowTag) :
+        type_(schema->type()), logicalType_(schema->logicalType()) {
+        init(schema, true);
+#if __cplusplus >= 201703L
+        *std::any_cast<T>(&value_) = v;
+#else
+        *boost::any_cast<T>(&value_) = v;
+#endif
+    }
+
+    /**
      * Constructs a datum corresponding to the given avro type.
      * The value will the appropraite default corresponding to the
      * data type.
      * \param schema The schema that defines the avro type.
      */
     GenericDatum(const ValidSchema& schema);
+
+    /**
+     * Constructs a shallow datum corresponding to the given avro type, to be read from untrusted input.
+     * \param schema The schema that defines the avro type.
+     * \sa ShallowTag.
+     */
+    GenericDatum(const NodePtr& schema, ShallowTag);
+
+    /**
+     * Constructs a shallow datum corresponding to the root of the given schema, to be read from untrusted input.
+     * \sa ShallowTag.
+     */
+    GenericDatum(const ValidSchema& schema, ShallowTag);
 };
 
 /**
@@ -242,6 +291,12 @@ public:
         selectBranch(0);
     }
 
+    /// Constructs a generic union whose datum of the first branch is shallow. \sa ShallowTag.
+    GenericUnion(const NodePtr& schema, ShallowTag) :
+        GenericContainer(AVRO_UNION, schema), curBranch_(schema->leaves()) {
+        selectBranch(0, ShallowTag());
+    }
+
     /**
      * Returns the index of the current branch.
      */
@@ -254,6 +309,14 @@ public:
     void selectBranch(size_t branch) {
         if (curBranch_ != branch) {
             datum_ = GenericDatum(schema()->leafAt(branch));
+            curBranch_ = branch;
+        }
+    }
+
+    /// Selects a new branch, and constructs its datum shallow. \sa ShallowTag.
+    void selectBranch(size_t branch, ShallowTag) {
+        if (curBranch_ != branch) {
+            datum_ = GenericDatum(schema()->leafAt(branch), ShallowTag());
             curBranch_ = branch;
         }
     }
@@ -279,6 +342,8 @@ public:
  * The generic container for Avro records.
  */
 class AVRO_DECL GenericRecord : public GenericContainer {
+    /// ClickHouse: the fields of a shallow record are its first fields, which `GenericReader` constructs as it reads them.
+    friend class GenericReader;
     std::vector<GenericDatum> fields_;
 public:
     /**
@@ -286,6 +351,12 @@ public:
      * which should be of Avro type record.
      */
     GenericRecord(const NodePtr& schema);
+
+    /**
+     * Constructs a generic record that has none of its fields, which \c GenericReader constructs as it reads them. A
+     * record that was read has all of them, and so has one that was constructed without the tag. \sa ShallowTag.
+     */
+    GenericRecord(const NodePtr& schema, ShallowTag) : GenericContainer(AVRO_RECORD, schema) { }
 
     /**
      * Returns the number of fields in the current record.
@@ -345,11 +416,16 @@ public:
     }
 
     /**
-     * Replaces the field at the given position \p pos with \p v.
+     * Replaces the field at the given position \p pos with \p v. ClickHouse: the field after the last one of a shallow
+     * record (\c ShallowTag) is appended, so that a record is filled in order without constructing its fields first.
      */
     void setFieldAt(size_t pos, const GenericDatum& v) {
         // assertSameType(v, schema()->leafAt(pos));
-        fields_[pos] = v;
+        if (pos == fields_.size() && pos < schema()->leaves()) {
+            fields_.push_back(v);
+        } else {
+            fields_[pos] = v;
+        }
     }
 };
 
@@ -595,6 +671,14 @@ inline void GenericDatum::selectBranch(size_t branch) {
     std::any_cast<GenericUnion>(&value_)->selectBranch(branch);
 #else
     boost::any_cast<GenericUnion>(&value_)->selectBranch(branch);
+#endif
+}
+
+inline void GenericDatum::selectBranch(size_t branch, ShallowTag tag) {
+#if __cplusplus >= 201703L
+    std::any_cast<GenericUnion>(&value_)->selectBranch(branch, tag);
+#else
+    boost::any_cast<GenericUnion>(&value_)->selectBranch(branch, tag);
 #endif
 }
 

@@ -42,7 +42,21 @@ GenericDatum::GenericDatum(const NodePtr& schema) :
     init(schema);
 }
 
-void GenericDatum::init(const NodePtr& schema)
+GenericDatum::GenericDatum(const ValidSchema& schema, ShallowTag) :
+    type_(schema.root()->type()),
+    logicalType_(schema.root()->logicalType())
+{
+    init(schema.root(), true);
+}
+
+GenericDatum::GenericDatum(const NodePtr& schema, ShallowTag) :
+    type_(schema->type()),
+    logicalType_(schema->logicalType())
+{
+    init(schema, true);
+}
+
+void GenericDatum::init(const NodePtr& schema, bool shallow)
 {
     if (initDepth >= maxNestingDepth) {
         throw Exception(boost::format("Cannot build a datum nested deeper than %1% levels") % maxNestingDepth);
@@ -84,7 +98,7 @@ void GenericDatum::init(const NodePtr& schema)
         value_ = GenericFixed(sc);
         break;
     case AVRO_RECORD:
-        value_ = GenericRecord(sc);
+        value_ = shallow ? GenericRecord(sc, ShallowTag()) : GenericRecord(sc);
         break;
     case AVRO_ENUM:
         value_ = GenericEnum(sc);
@@ -96,7 +110,7 @@ void GenericDatum::init(const NodePtr& schema)
         value_ = GenericMap(sc);
         break;
     case AVRO_UNION:
-        value_ = GenericUnion(sc);
+        value_ = shallow ? GenericUnion(sc, ShallowTag()) : GenericUnion(sc);
         break;
     default:
         throw Exception(boost::format("Unknown schema type %1%") %

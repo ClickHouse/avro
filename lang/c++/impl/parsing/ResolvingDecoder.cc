@@ -457,7 +457,7 @@ class ResolvingDecoderHandler {
         case Symbol::sDefaultStart:
             defaultData_ = s.extra<shared_ptr<vector<uint8_t> > >();
             backup_ = base_;
-            inp_ = memoryInputStream(&(*defaultData_)[0], defaultData_->size());
+            inp_ = memoryInputStream(defaultData_->data(), defaultData_->size());
             base_ = binDecoder;
             base_->init(*inp_);
             return 0;
@@ -477,6 +477,12 @@ class ResolvingDecoderHandler {
             base_= backup_;
             backup_.reset();
         }
+    }
+
+    /// The position in the input of the decoder that reads the actual stream, not the one over the default values.
+    uint64_t inputPosition() const
+    {
+        return (backup_ != NULL ? backup_ : base_)->inputPosition();
     }
 };
 
@@ -513,6 +519,7 @@ class ResolvingDecoderImpl : public ResolvingDecoder
         parser_.processImplicitActions();
         base_->drain();
     }
+    uint64_t inputPosition() const { return handler_.inputPosition(); }
 public:
     ResolvingDecoderImpl(const ValidSchema& writer, const ValidSchema& reader,
         const DecoderPtr& base) :

@@ -688,7 +688,10 @@ void DataFileReaderBase::readDataBlock()
         int b4 = compressed_[len - 1] & 0xFF;
 
         checksum = (b1 << 24) + (b2 << 16) + (b3 << 8) + (b4);
-        if (!snappy::Uncompress(reinterpret_cast<const char*>(compressed_.data()),
+        // `snappy::Uncompress` sizes its output from the length prefix in the data before decoding it,
+        // so validate first to not allocate whatever size the file claims.
+        if (!snappy::IsValidCompressedBuffer(reinterpret_cast<const char*>(compressed_.data()), len - 4)
+            || !snappy::Uncompress(reinterpret_cast<const char*>(compressed_.data()),
                 len - 4, &uncompressed)) {
             throw Exception(
                     "Snappy Compression reported an error when decompressing");

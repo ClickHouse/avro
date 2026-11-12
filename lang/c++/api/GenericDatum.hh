@@ -209,9 +209,9 @@ public:
         type_(schema->type()), logicalType_(schema->logicalType()) {
         init(schema);
 #if __cplusplus >= 201703L
-        *std::any_cast<T>(&value_) = v;
+        std::any_cast<T&>(value_) = v;
 #else
-        *boost::any_cast<T>(&value_) = v;
+        boost::any_cast<T&>(value_) = v;
 #endif
     }
 
@@ -224,9 +224,9 @@ public:
         type_(schema->type()), logicalType_(schema->logicalType()) {
         init(schema, true);
 #if __cplusplus >= 201703L
-        *std::any_cast<T>(&value_) = v;
+        std::any_cast<T&>(value_) = v;
 #else
-        *boost::any_cast<T>(&value_) = v;
+        boost::any_cast<T&>(value_) = v;
 #endif
     }
 
@@ -626,22 +626,22 @@ inline LogicalType GenericDatum::logicalType() const {
 template<typename T> T& GenericDatum::value() {
     return (type_ == AVRO_UNION) ?
 #if __cplusplus >= 201703L
-        std::any_cast<GenericUnion>(&value_)->datum().value<T>() :
-        *std::any_cast<T>(&value_);
+        std::any_cast<GenericUnion&>(value_).datum().value<T>() :
+        std::any_cast<T&>(value_);
 #else
-        boost::any_cast<GenericUnion>(&value_)->datum().value<T>() :
-        *boost::any_cast<T>(&value_);
+        boost::any_cast<GenericUnion&>(value_).datum().value<T>() :
+        boost::any_cast<T&>(value_);
 #endif
 }
 
 template<typename T> const T& GenericDatum::value() const {
     return (type_ == AVRO_UNION) ?
 #if __cplusplus >= 201703L
-        std::any_cast<GenericUnion>(&value_)->datum().value<T>() :
-        *std::any_cast<T>(&value_);
+        std::any_cast<const GenericUnion&>(value_).datum().value<T>() :
+        std::any_cast<const T&>(value_);
 #else
-        boost::any_cast<GenericUnion>(&value_)->datum().value<T>() :
-        *boost::any_cast<T>(&value_);
+        boost::any_cast<const GenericUnion&>(value_).datum().value<T>() :
+        boost::any_cast<const T&>(value_);
 #endif
 }
 
@@ -655,9 +655,9 @@ inline size_t GenericDatum::unionBranch() const {
 
 inline const NodePtr& GenericDatum::branchSchema(size_t branch) const {
 #if __cplusplus >= 201703L
-    const NodePtr& unionSchema = std::any_cast<GenericUnion>(&value_)->schema();
+    const NodePtr& unionSchema = std::any_cast<const GenericUnion&>(value_).schema();
 #else
-    const NodePtr& unionSchema = boost::any_cast<GenericUnion>(&value_)->schema();
+    const NodePtr& unionSchema = boost::any_cast<const GenericUnion&>(value_).schema();
 #endif
     if (branch >= unionSchema->leaves()) {
         throw Exception(boost::format("Union branch %1% is out of range of the %2% branches of the union") %
@@ -676,9 +676,9 @@ inline void GenericDatum::selectBranch(size_t branch) {
 
 inline void GenericDatum::selectBranch(size_t branch, ShallowTag tag) {
 #if __cplusplus >= 201703L
-    std::any_cast<GenericUnion>(&value_)->selectBranch(branch, tag);
+    std::any_cast<GenericUnion&>(value_).selectBranch(branch, tag);
 #else
-    boost::any_cast<GenericUnion>(&value_)->selectBranch(branch, tag);
+    boost::any_cast<GenericUnion&>(value_).selectBranch(branch, tag);
 #endif
 }
 

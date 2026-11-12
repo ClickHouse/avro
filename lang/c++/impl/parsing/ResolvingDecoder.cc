@@ -457,7 +457,7 @@ class ResolvingDecoderHandler {
         case Symbol::sDefaultStart:
             defaultData_ = s.extra<shared_ptr<vector<uint8_t> > >();
             backup_ = base_;
-            inp_ = memoryInputStream(&(*defaultData_)[0], defaultData_->size());
+            inp_ = memoryInputStream(defaultData_->data(), defaultData_->size());
             base_ = binDecoder;
             base_->init(*inp_);
             return 0;

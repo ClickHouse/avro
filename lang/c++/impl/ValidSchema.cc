@@ -153,7 +153,7 @@ ValidSchema::toFlatList(std::ostream &os) const
 string ValidSchema::compactSchema(const string& schema) {
     bool insideQuote = false;
     size_t newPos = 0;
-    string data(schema.data());
+    string data = schema;
 
     for (size_t currentPos = 0; currentPos < schema.size(); currentPos++) {
         if (!insideQuote && std::isspace(data[currentPos])) {

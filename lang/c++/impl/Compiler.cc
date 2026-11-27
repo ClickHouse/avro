@@ -170,8 +170,9 @@ struct Field {
     const string name;
     const NodePtr schema;
     const GenericDatum defaultValue;
-    Field(const string& n, const NodePtr& v, GenericDatum dv) :
-        name(n), schema(v), defaultValue(dv) { }
+    const int fieldId;
+    Field(const string& n, const NodePtr& v, GenericDatum dv, int fid = -1) :
+        name(n), schema(v), defaultValue(dv), fieldId(fid) { }
 };
 
 static void assertType(const Entity& e, EntityType et)
@@ -306,7 +307,11 @@ static Field makeField(const Entity& e, SymbolTable& st, const string& ns,
     }
     GenericDatum d = (it2 == m.end()) ? GenericDatum() :
         makeGenericDatum(node, it2->second, st);
-    return Field(n, node, d);
+    int fieldId = -1;
+    if (containsField(m, "field-id")) {
+        fieldId = static_cast<int>(getLongField(e, m, "field-id"));
+    }
+    return Field(n, node, d, fieldId);
 }
 
 // Extended makeRecordNode (with doc).
@@ -318,12 +323,14 @@ static NodePtr makeRecordNode(const Entity& e, const Name& name,
     concepts::MultiAttribute<string> fieldNames;
     concepts::MultiAttribute<NodePtr> fieldValues;
     vector<GenericDatum> defaultValues;
+    vector<int> fieldIds;
 
     for (Array::const_iterator it = v.begin(); it != v.end(); ++it) {
         Field f = makeField(*it, st, ns, depth, maxDepth);
         fieldNames.add(f.name);
         fieldValues.add(f.schema);
         defaultValues.push_back(f.defaultValue);
+        fieldIds.push_back(f.fieldId);
     }
     NodeRecord* node;
     if (doc == NULL) {
@@ -333,6 +340,7 @@ static NodePtr makeRecordNode(const Entity& e, const Name& name,
         node = new NodeRecord(asSingleAttribute(name), asSingleAttribute(*doc),
                               fieldValues, fieldNames, defaultValues);
     }
+    node->setFieldIds(fieldIds);
     return NodePtr(node);
 }
 
@@ -417,12 +425,15 @@ static NodePtr makeArrayNode(const Entity& e, const Object& m,
     SymbolTable& st, const string& ns, size_t depth, size_t maxDepth)
 {
     Object::const_iterator it = findField(e, m, "items");
-    NodePtr node = NodePtr(new NodeArray(
+    NodePtr arrayNode = NodePtr(new NodeArray(
         asSingleAttribute(makeNode(it->second, st, ns, depth + 1, maxDepth))));
     if (containsField(m, "doc")) {
-        node->setDoc(getDocField(e, m));
+        arrayNode->setDoc(getDocField(e, m));
     }
-    return node;
+    if (containsField(m, "element-id")) {
+        arrayNode->setElementId(static_cast<int>(getLongField(e, m, "element-id")));
+    }
+    return NodePtr(arrayNode);
 }
 
 static NodePtr makeMapNode(const Entity& e, const Object& m,

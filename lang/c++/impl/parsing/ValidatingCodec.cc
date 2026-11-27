@@ -197,6 +197,7 @@ class ValidatingDecoder : public Decoder {
     void drain() {
         base->drain();
     }
+    uint64_t inputPosition() const { return base->inputPosition(); }
 
 public:
 

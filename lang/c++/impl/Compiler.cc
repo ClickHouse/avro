@@ -237,7 +237,9 @@ static GenericDatum makeGenericDatum(NodePtr n,
     case AVRO_RECORD:
     {
         assertType(e, json::etObject);
-        GenericRecord result(n);
+        // Shallow, and filled in order from the default, so that what is constructed is what the default (the text of
+        // the schema) holds, and not the datums of every field of a schema that refers to a named record several times.
+        GenericRecord result(n, ShallowTag());
         const map<string, Entity>& v = e.objectValue();
         for (size_t i = 0; i < n->leaves(); ++i) {
             map<string, Entity>::const_iterator it = v.find(n->nameAt(i));
@@ -248,7 +250,7 @@ static GenericDatum makeGenericDatum(NodePtr n,
             result.setFieldAt(i,
                 makeGenericDatum(n->leafAt(i), it->second, st));
         }
-        return GenericDatum(n, result);
+        return GenericDatum(n, result, ShallowTag());
     }
     case AVRO_ENUM:
         assertType(e, json::etString);
@@ -278,10 +280,10 @@ static GenericDatum makeGenericDatum(NodePtr n,
     }
     case AVRO_UNION:
     {
-        GenericUnion result(n);
+        GenericUnion result(n, ShallowTag());
         result.selectBranch(0);
         result.datum() = makeGenericDatum(n->leafAt(0), e, st);
-        return GenericDatum(n, result);
+        return GenericDatum(n, result, ShallowTag());
     }
     case AVRO_FIXED:
         assertType(e, json::etString);

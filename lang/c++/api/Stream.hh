@@ -355,6 +355,14 @@ struct StreamReader {
         in_->backup(end_ - next_);
         end_ = next_;
     }
+
+    /**
+     * Number of bytes of the underlying stream that were handed to the caller,
+     * that is, fetched from the stream and not left unread in the buffer.
+     */
+    uint64_t position() const {
+        return in_->byteCount() - (end_ - next_);
+    }
 };
 
 /**
